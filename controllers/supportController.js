@@ -3,7 +3,7 @@ import { Feedback } from '../Models/feedbackModel.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const BASE_URL = process.env.BASE_URL || 'http://172.20.10.4:3002';
+const BASE_URL = process.env.BASE_URL || 'http://192.168.31.186:3002';
 
 // Helper function to ensure full URL
 const ensureFullUrl = (url) => {
@@ -19,7 +19,7 @@ const ensureFullUrl = (url) => {
 // Create or Update Support Content (Admin only)
 export const upsertSupportContent = async (req, res) => {
   try {
-    const { type, title, content, sections, contactInfo, isActive } = req.body;
+    let { type, title, content, sections, contactInfo, isActive, targetRole } = req.body;
     const adminId = req.user.userId;
 
     // Check if admin
@@ -28,6 +28,23 @@ export const upsertSupportContent = async (req, res) => {
         success: false,
         message: 'Only admin can manage support content'
       });
+    }
+
+    // Parse JSON strings from FormData
+    if (typeof sections === 'string') {
+      try {
+        sections = JSON.parse(sections);
+      } catch (e) {
+        sections = [];
+      }
+    }
+    
+    if (typeof contactInfo === 'string') {
+      try {
+        contactInfo = JSON.parse(contactInfo);
+      } catch (e) {
+        contactInfo = {};
+      }
     }
 
     // Handle file attachments
@@ -41,8 +58,9 @@ export const upsertSupportContent = async (req, res) => {
       }));
     }
 
-    // Find existing or create new
-    let supportContent = await SupportContent.findOne({ type });
+    // Find existing or create new (by type and targetRole)
+    const finalTargetRole = targetRole || 'all';
+    let supportContent = await SupportContent.findOne({ type, targetRole: finalTargetRole });
 
     if (supportContent) {
       // Update existing
@@ -51,6 +69,7 @@ export const upsertSupportContent = async (req, res) => {
       supportContent.sections = sections || supportContent.sections;
       supportContent.contactInfo = contactInfo || supportContent.contactInfo;
       supportContent.isActive = isActive !== undefined ? isActive : supportContent.isActive;
+      supportContent.targetRole = finalTargetRole;
       supportContent.lastUpdatedBy = adminId;
 
       if (attachments.length > 0) {
@@ -62,6 +81,7 @@ export const upsertSupportContent = async (req, res) => {
       // Create new
       supportContent = new SupportContent({
         type,
+        targetRole: finalTargetRole,
         title,
         content,
         sections: sections || [],
@@ -171,14 +191,71 @@ export const getAllFeedback = async (req, res) => {
     if (status) query.status = status;
     if (type) query.type = type;
 
-    const feedbacks = await Feedback.find(query)
+    console.log('📋 Admin fetching feedback with query:', JSON.stringify(query));
+    console.log('📋 Pagination:', { page, limit });
+
+    // Try multiple query approaches to find feedback
+    const query1 = query;
+
+    console.log('📋 Query 1:', JSON.stringify(query1));
+
+    // First try the standard query
+    let feedbacks = await Feedback.find(query1)
       .populate('userId', 'name email role profilePic')
       .populate('adminResponse.respondedBy', 'name email')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
 
+    console.log(`📊 Query 1 result: ${feedbacks.length} feedbacks found`);
+
+    // If no results and status filter is 'pending', try alternative query
+    if (feedbacks.length === 0 && status === 'pending') {
+      console.log('⚠️ No results with standard query, trying alternative...');
+      const allFeedbacks = await Feedback.find({})
+        .populate('userId', 'name email role profilePic')
+        .populate('adminResponse.respondedBy', 'name email')
+        .sort({ createdAt: -1 });
+
+      console.log(`📊 Total feedbacks found: ${allFeedbacks.length}`);
+
+      // Filter manually
+      feedbacks = allFeedbacks.filter(feedback => {
+        const feedbackStatus = feedback.status;
+        console.log(`🔍 Feedback ${feedback._id} (${feedback.subject}): status = ${feedbackStatus}`);
+        return feedbackStatus === 'pending';
+      });
+
+      console.log(`📊 After manual filter: ${feedbacks.length} pending feedbacks`);
+
+      // Apply pagination to filtered results
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + parseInt(limit);
+      feedbacks = feedbacks.slice(startIndex, endIndex);
+    }
+
     const total = await Feedback.countDocuments(query);
+
+    console.log('📊 Feedback fetch result:', {
+      found: feedbacks.length,
+      total,
+      query: JSON.stringify(query),
+      page,
+      limit
+    });
+
+    // Log each feedback for debugging
+    feedbacks.forEach((feedback, index) => {
+      console.log(`📝 Feedback ${index + 1}:`, {
+        id: feedback._id.toString(),
+        userId: feedback.userId?._id?.toString() || feedback.userId?.toString(),
+        userName: feedback.userId?.name || 'N/A',
+        type: feedback.type,
+        status: feedback.status,
+        subject: feedback.subject,
+        createdAt: feedback.createdAt
+      });
+    });
 
     res.status(200).json({
       success: true,
@@ -190,7 +267,7 @@ export const getAllFeedback = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get all feedback error:', error);
+    console.error('❌ Get all feedback error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching feedback',
@@ -250,8 +327,27 @@ export const respondToFeedback = async (req, res) => {
 export const getSupportContent = async (req, res) => {
   try {
     const { type } = req.params;
+    const { role } = req.query; // Get user role from query parameter
 
-    const supportContent = await SupportContent.findOne({ type, isActive: true });
+    // Build query - prioritize role-specific content, fallback to 'all'
+    let supportContent = null;
+    if (role && (role === 'teacher' || role === 'student')) {
+      // Try to find role-specific content first
+      supportContent = await SupportContent.findOne({ 
+        type, 
+        targetRole: role, 
+        isActive: true 
+      });
+    }
+    
+    // If no role-specific content found, get 'all' content
+    if (!supportContent) {
+      supportContent = await SupportContent.findOne({ 
+        type, 
+        targetRole: 'all', 
+        isActive: true 
+      });
+    }
 
     if (!supportContent) {
       return res.status(404).json({
@@ -288,6 +384,15 @@ export const submitFeedback = async (req, res) => {
     const userId = req.user.userId;
     const { type, subject, message, rating } = req.body;
 
+    console.log('📝 Feedback submission received:', {
+      userId,
+      type: type || 'general_feedback',
+      subject,
+      messageLength: message?.length || 0,
+      rating,
+      hasFiles: !!(req.files && req.files.length > 0)
+    });
+
     // Handle file attachments
     let attachments = [];
     if (req.files && req.files.length > 0) {
@@ -296,6 +401,7 @@ export const submitFeedback = async (req, res) => {
         fileUrl: ensureFullUrl(`/uploads/${file.filename}`),
         fileType: file.mimetype
       }));
+      console.log('📎 Feedback attachments:', attachments.length);
     }
 
     const feedback = new Feedback({
@@ -308,7 +414,36 @@ export const submitFeedback = async (req, res) => {
       status: 'pending'
     });
 
+    console.log('💾 Saving feedback to database...');
     await feedback.save();
+    console.log('✅ Feedback saved successfully:', {
+      id: feedback._id.toString(),
+      userId: feedback.userId.toString(),
+      type: feedback.type,
+      status: feedback.status,
+      subject: feedback.subject,
+      createdAt: feedback.createdAt
+    });
+
+    // Verify the save by querying the feedback again
+    const savedFeedback = await Feedback.findById(feedback._id);
+    if (savedFeedback) {
+      console.log('🔍 Verification after save:', {
+        id: savedFeedback._id.toString(),
+        userId: savedFeedback.userId.toString(),
+        status: savedFeedback.status,
+        subject: savedFeedback.subject,
+        hasMessage: !!savedFeedback.message
+      });
+
+      // Also verify with a direct query
+      const verifyQuery = {
+        _id: feedback._id,
+        status: 'pending'
+      };
+      const verifyResult = await Feedback.findOne(verifyQuery);
+      console.log('🔍 Verification query result:', verifyResult ? 'Found' : 'Not found');
+    }
 
     res.status(201).json({
       success: true,
@@ -322,7 +457,7 @@ export const submitFeedback = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Submit feedback error:', error);
+    console.error('❌ Submit feedback error:', error);
     res.status(500).json({
       success: false,
       message: 'Error submitting feedback',

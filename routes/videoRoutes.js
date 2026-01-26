@@ -20,6 +20,7 @@ router.get('/videos/type/:type', VideoController.getVideosByType); // Get videos
 router.get('/videos/:id', authenticateToken, VideoController.getVideoById);
 router.get('/videos/:id/stream', VideoController.streamVideo);
 router.get('/my-videos', authenticateToken, VideoController.getMyVideos);
+router.put('/videos/:id', authenticateToken, teacherOnly, videoUpload, handleUploadError, VideoController.updateVideo); // Only teachers can update their own videos
 router.delete('/videos/:id', authenticateToken, teacherOnly, VideoController.deleteVideo); // Only teachers can delete videos
 
 // Like, View, Share endpoints

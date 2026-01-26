@@ -2,25 +2,9 @@ import Quiz from "../Models/quiz.js";
 import User from "../Models/userModel.js";
 import QuizAttempt from "../Models/quizAttemptModel.js";
 import QuizEnrollment from "../Models/quizEnrollmentModel.js";
-import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 dotenv.config();
-
-// Razorpay instance for quiz payments
-const getRazorpayInstance = () => {
-    const keyId = process.env.RAZORPAY_KEY_ID;
-    const keySecret = process.env.RAZORPAY_KEY_SECRET;
-    
-    if (!keyId || !keySecret) {
-        throw new Error('Razorpay credentials are not configured');
-    }
-    
-    return new Razorpay({
-        key_id: keyId,
-        key_secret: keySecret,
-    });
-};
 
 // Helper function to update quiz status based on timing
 const updateQuizStatus = (quiz) => {
@@ -712,13 +696,14 @@ export const getStudentDashboardQuizzes = async (req, res) => {
             });
         }
 
+        const studentId = req.user.userId;
         console.log('🎓 Student fetching quizzes...');
         console.log('📊 User:', req.user);
 
         // Get all quizzes with only essential fields - sort by newest first
         const quizzes = await Quiz.find()
             .select('title category startDate startTime endDate endTime questions createdBy createdAt')
-            .populate("createdBy", "name")
+            .populate("createdBy", "name email role")
             .sort({ createdAt: -1 }); // Sort by creation date, newest first
         
         console.log('📚 Total quizzes found:', quizzes.length);
@@ -730,10 +715,27 @@ export const getStudentDashboardQuizzes = async (req, res) => {
             });
         }
         
-        // Transform to simplified format
+        // Get all quiz IDs to check attempts in one query
+        const quizIds = quizzes.map(quiz => quiz._id);
+        
+        // Check which quizzes the student has already attempted
+        const attempts = await QuizAttempt.find({
+            studentId: studentId,
+            quizId: { $in: quizIds },
+            status: 'completed'
+        }).select('quizId');
+        
+        const attemptedQuizIds = new Set(attempts.map(attempt => attempt.quizId.toString()));
+        
+        // Transform to simplified format with attempt status
         const simplifiedQuizzes = quizzes.map(quiz => {
             const status = updateQuizStatus(quiz);
             const startDateTime = new Date(`${quiz.startDate.toISOString().split('T')[0]}T${quiz.startTime}`);
+            const hasAttempted = attemptedQuizIds.has(quiz._id.toString());
+            
+            // Determine creator name - show admin name if created by admin, teacher name if created by teacher
+            const creatorName = quiz.createdBy?.name || 'Unknown';
+            const creatorRole = quiz.createdBy?.role || 'teacher';
             
             return {
                 _id: quiz._id,
@@ -744,13 +746,16 @@ export const getStudentDashboardQuizzes = async (req, res) => {
                 startDateTime: startDateTime,
                 numberOfQuestions: quiz.questions.length,
                 status: status,
-                teacherName: quiz.createdBy?.name || 'Unknown Teacher',
-                createdAt: quiz.createdAt
+                teacherName: creatorName, // This will show admin name if created by admin
+                creatorName: creatorName, // Add explicit creator name field
+                creatorRole: creatorRole, // Add creator role (admin/teacher)
+                createdAt: quiz.createdAt,
+                hasAttempted: hasAttempted // Add attempt status
             };
         });
         
         console.log('✅ Returning', simplifiedQuizzes.length, 'quizzes');
-        console.log('📋 Quiz IDs:', simplifiedQuizzes.map(q => ({ id: q._id, title: q.title, created: q.createdAt })));
+        console.log('📋 Quiz IDs:', simplifiedQuizzes.map(q => ({ id: q._id, title: q.title, hasAttempted: q.hasAttempted })));
         
         res.status(200).json({
             success: true,
@@ -1487,29 +1492,14 @@ export const createQuizEnrollmentOrder = async (req, res) => {
             });
         }
 
-        // Convert amount to paise
-        const amountInPaise = quiz.entryFee * 100;
-
-        // Create Razorpay order
-        const razorpay = getRazorpayInstance();
-        const razorpayOrder = await razorpay.orders.create({
-            amount: amountInPaise,
-            currency: 'INR',
-            receipt: `quiz_${quizId}_${Date.now()}`,
-            notes: {
-                userId: userId.toString(),
-                quizId: quizId.toString(),
-                quizName: quiz.title,
-                type: 'quiz_enrollment'
-            }
-        });
+        // Generate order ID
+        const orderId = `quiz_order_${Date.now()}_${userId.toString().slice(-6)}`;
 
         // Save enrollment record
         const enrollment = new QuizEnrollment({
             studentId: userId,
             quizId: quizId,
-            orderId: razorpayOrder.id,
-            razorpayOrderId: razorpayOrder.id,
+            orderId: orderId,
             amount: quiz.entryFee,
             currency: 'INR',
             status: 'pending'
@@ -1521,10 +1511,9 @@ export const createQuizEnrollmentOrder = async (req, res) => {
             success: true,
             message: 'Enrollment order created successfully',
             order: {
-                orderId: razorpayOrder.id,
+                orderId: orderId,
                 amount: quiz.entryFee,
                 currency: 'INR',
-                key: process.env.RAZORPAY_KEY_ID,
                 name: 'Edu-Spark Quiz',
                 description: `Enrollment for: ${quiz.title}`,
                 prefill: {
@@ -1573,21 +1562,8 @@ export const verifyQuizEnrollmentPayment = async (req, res) => {
             });
         }
 
-        // Verify the signature
-        const generatedSignature = crypto
-            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-            .digest('hex');
-
-        if (generatedSignature !== razorpaySignature) {
-            enrollment.status = 'failed';
-            await enrollment.save();
-
-            return res.status(400).json({
-                success: false,
-                message: 'Payment verification failed'
-            });
-        }
+        // Payment verification (signature verification removed)
+        // Note: Payment gateway integration has been removed
 
         // Find the quiz and add student to enrolled list
         const quiz = await Quiz.findById(enrollment.quizId);
@@ -1605,9 +1581,7 @@ export const verifyQuizEnrollmentPayment = async (req, res) => {
         }
 
         // Update enrollment record
-        enrollment.paymentId = razorpayPaymentId;
-        enrollment.razorpayPaymentId = razorpayPaymentId;
-        enrollment.razorpaySignature = razorpaySignature;
+        enrollment.paymentId = razorpayPaymentId || `payment_${Date.now()}`;
         enrollment.status = 'completed';
         await enrollment.save();
 

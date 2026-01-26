@@ -30,7 +30,7 @@ const getVideoDuration = (videoPath) => {
 // Get base URL configuration
 const getBaseUrl = () => {
   // Use production IP for external access
-  const defaultUrl = 'http://172.20.10.4:3002';
+  const defaultUrl = 'http://192.168.31.186:3002';
   const baseUrl = process.env.BASE_URL || defaultUrl;
 
   // Ensure BASE_URL has proper protocol
@@ -144,20 +144,25 @@ export const createPlaylistItem = async (req, res) => {
 
     console.log('📁 Uploaded files:', { videoFile, thumbnail });
 
-    // Check if user is teacher
-    if (userRole !== "teacher") {
+    // Check if user is teacher or admin
+    if (userRole !== "teacher" && userRole !== "admin") {
       return res.status(403).json({
         success: false,
-        message: "Only teachers can create playlist items",
+        message: "Only teachers and admins can create playlist items",
       });
     }
 
     // Validate required fields
-    if (!title || !description || !contentType || !category) {
+    if (!title || !description || !contentType) {
       return res.status(400).json({
         success: false,
-        message: "Title, description, contentType, and category are required",
+        message: "Title, description, and contentType are required",
       });
+    }
+
+    // Set default category if not provided
+    if (!category) {
+      category = 'general';
     }
 
     // Validate thumbnail is uploaded
@@ -168,7 +173,7 @@ export const createPlaylistItem = async (req, res) => {
       });
     }
 
-    // Check if course exists and user owns it
+    // Check if course exists
     const course = await Course.findById(courseId);
     if (!course) {
       return res.status(404).json({
@@ -177,7 +182,8 @@ export const createPlaylistItem = async (req, res) => {
       });
     }
 
-    if (course.teacher.toString() !== userId) {
+    // Check ownership: Admin can add to any course, teacher can only add to their own courses
+    if (userRole !== "admin" && course.teacher && course.teacher.toString() !== userId) {
       return res.status(403).json({
         success: false,
         message: "You can only add playlist items to your own courses",
@@ -325,7 +331,28 @@ export const getCoursePlaylist = async (req, res) => {
       });
     }
 
-    const playlistItems = await CoursePlaylist.find({ course: courseId })
+    // Check user role - students should not see deleted items
+    const userRole = req.user?.role;
+    const userId = req.user?.userId;
+    const isStudent = userRole === 'student';
+    
+    // Build query - exclude deleted items for students
+    let query = { course: courseId };
+    if (isStudent) {
+      query.isDeleted = { $ne: true };
+    } else if (userRole === 'teacher') {
+      // Teachers can see their own deleted items if they own the course
+      // Otherwise, exclude deleted items
+      if (course && course.teacher.toString() !== userId) {
+        query.isDeleted = { $ne: true };
+      }
+      // If teacher owns the course, they can see all items (including deleted)
+    } else {
+      // Admin or other roles - exclude deleted by default
+      query.isDeleted = { $ne: true };
+    }
+    
+    const playlistItems = await CoursePlaylist.find(query)
       .populate("teacher", "name email")
       .sort({ order: 1 });
 
@@ -387,10 +414,19 @@ export const getPlaylistItemById = async (req, res) => {
   try {
     const { courseId, itemId } = req.params;
 
-    const playlistItem = await CoursePlaylist.findOne({ 
+    // Check user role - students should not see deleted items
+    const userRole = req.user?.role;
+    const isStudent = userRole === 'student';
+    
+    let query = { 
       _id: itemId, 
       course: courseId 
-    }).populate("teacher", "name email");
+    };
+    if (isStudent) {
+      query.isDeleted = { $ne: true };
+    }
+    
+    const playlistItem = await CoursePlaylist.findOne(query).populate("teacher", "name email");
 
     if (!playlistItem) {
       return res.status(404).json({ 
@@ -560,15 +596,18 @@ export const deletePlaylistItem = async (req, res) => {
       }
     }
     
-    if (playlistItem.thumbnail) {
-      const thumbPath = path.join(process.cwd(), 'uploads', playlistItem.thumbnail);
-      if (fs.existsSync(thumbPath)) {
-        fs.unlinkSync(thumbPath);
-        console.log('🗑️ Deleted thumbnail:', playlistItem.thumbnail);
-      }
-    }
+    // Soft delete: Mark as deleted instead of removing from database
+    // Note: We keep the files for now in case teacher wants to restore
+    playlistItem.isDeleted = true;
+    playlistItem.deletedAt = new Date();
+    await playlistItem.save();
 
-    await CoursePlaylist.deleteOne({ _id: itemId });
+    console.log('🗑️ Playlist item soft deleted:', {
+      itemId: itemId,
+      courseId: courseId,
+      title: playlistItem.title,
+      deletedAt: playlistItem.deletedAt
+    });
 
     res.status(200).json({ 
       success: true, 

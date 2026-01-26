@@ -26,7 +26,10 @@ const coursePlaylistSchema = new mongoose.Schema({
   views: { type: Number, default: 0 },
   likes: { type: Number, default: 0 },
   likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  isFree: { type: Boolean, default: false } // First intro video can be free
+  isFree: { type: Boolean, default: false }, // First intro video can be free
+  // Soft delete flag
+  isDeleted: { type: Boolean, default: false },
+  deletedAt: { type: Date }
 }, { timestamps: true });
 
 export const CoursePlaylist = mongoose.model('CoursePlaylist', coursePlaylistSchema);

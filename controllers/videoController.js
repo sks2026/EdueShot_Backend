@@ -26,7 +26,7 @@ const getVideoDuration = (videoPath) => {
 // Helper function to generate full URL for uploaded files
 const generateFileUrl = (filename) => {
   // Default to production server URL
-  const defaultUrl = 'http://172.20.10.4:3002';
+  const defaultUrl = 'http://192.168.31.186:3002';
   let baseUrl = process.env.BASE_URL || defaultUrl;
   
   // Ensure BASE_URL has proper protocol
@@ -43,13 +43,13 @@ const ensureFullUrl = (url) => {
   if (!url) return null;
   
   // Default base URL
-  const defaultUrl = 'http://172.20.10.4:3002';
+  const defaultUrl = 'http://192.168.31.186:3002';
   
   // Check if already full URL with proper protocol
   if (url.startsWith('http://') || url.startsWith('https://')) {
     // Fix localhost references
-    let fixedUrl = url.replace(/localhost/gi, '172.20.10.4');
-    fixedUrl = fixedUrl.replace(/127\.0\.0\.1/gi, '172.20.10.4');
+    let fixedUrl = url.replace(/localhost/gi, '192.168.31.186');
+    fixedUrl = fixedUrl.replace(/127\.0\.0\.1/gi, '192.168.31.186');
     return fixedUrl;
   }
   
@@ -71,8 +71,18 @@ const uploadVideo = async (req, res) => {
     const videoFile = req.files?.video?.[0];
     const thumbFile = req.files?.thumbnail?.[0];
 
-    console.log('🎥 Video file:', videoFile);
-    console.log('🖼️ Thumbnail file:', thumbFile);
+    console.log('🎥 Video file:', videoFile ? {
+      filename: videoFile.filename,
+      originalname: videoFile.originalname,
+      mimetype: videoFile.mimetype,
+      size: videoFile.size
+    } : 'No video file');
+    console.log('🖼️ Thumbnail file:', thumbFile ? {
+      filename: thumbFile.filename,
+      originalname: thumbFile.originalname,
+      mimetype: thumbFile.mimetype,
+      size: thumbFile.size
+    } : 'No thumbnail file');
 
     if (!videoFile) {
       console.log('❌ No video file found');
@@ -114,11 +124,29 @@ const uploadVideo = async (req, res) => {
     await newVideo.save();
     console.log('✅ Video saved successfully');
     
+    // Ensure thumbnailUrl is included in response
+    const videoResponse = {
+      ...newVideo.toObject(),
+      videoUrl: generateFileUrl(videoFile.filename),
+      thumbnailUrl: thumbFile ? generateFileUrl(thumbFile.filename) : null,
+      thumbnail: thumbFile ? generateFileUrl(thumbFile.filename) : null // Also provide as 'thumbnail' for frontend compatibility
+    };
+
+    console.log('📹 Video upload response:', {
+      id: videoResponse._id,
+      title: videoResponse.title,
+      videoUrl: videoResponse.videoUrl,
+      thumbnailUrl: videoResponse.thumbnailUrl,
+      thumbnail: videoResponse.thumbnail,
+      hasThumbnail: !!thumbFile,
+      thumbnailFilename: thumbFile?.filename
+    });
+
     res.status(201).json({ 
       success: true,
       message: 'Video uploaded successfully', 
-      video: newVideo,
-      data: newVideo,
+      video: videoResponse,
+      data: videoResponse,
       duration: videoDuration
     });
   } catch (err) {
@@ -134,14 +162,33 @@ const uploadVideo = async (req, res) => {
 
 const getAllVideos = async (req, res) => {
   try {
-    const videos = await Video.find().populate('uploadedBy', 'name email profilePic');
+    // Exclude deleted videos
+    const videos = await Video.find({ isDeleted: { $ne: true } }).populate('uploadedBy', 'name email profilePic');
     
-    // Ensure all URLs are full URLs
-    const videosWithFullUrls = videos.map(video => ({
-      ...video.toObject(),
-      videoUrl: ensureFullUrl(video.videoUrl),
-      thumbnailUrl: ensureFullUrl(video.thumbnailUrl)
-    }));
+    console.log(`📹 getAllVideos: Found ${videos.length} videos`);
+    
+    // Ensure all URLs are full URLs and provide both thumbnailUrl and thumbnail for compatibility
+    const videosWithFullUrls = videos.map(video => {
+      const videoObj = video.toObject();
+      const thumbnailUrl = ensureFullUrl(videoObj.thumbnailUrl);
+      
+      // Log thumbnail processing for debugging
+      if (!videoObj.thumbnailUrl) {
+        console.warn('⚠️ Video missing thumbnail in getAllVideos:', {
+          id: videoObj._id,
+          title: videoObj.title
+        });
+      }
+      
+      return {
+        ...videoObj,
+        videoUrl: ensureFullUrl(videoObj.videoUrl),
+        thumbnailUrl: thumbnailUrl,
+        thumbnail: thumbnailUrl // Also provide as 'thumbnail' for frontend compatibility
+      };
+    });
+    
+    console.log(`📹 getAllVideos: Returning ${videosWithFullUrls.length} videos with thumbnails`);
     
     res.json(videosWithFullUrls);
   } catch (err) {
@@ -152,15 +199,38 @@ const getAllVideos = async (req, res) => {
 
 const getVideoById = async (req, res) => {
   try {
-    const video = await Video.findById(req.params.id).populate('uploadedBy', 'name email profilePic');
+    const video = await Video.findOne({ 
+      _id: req.params.id,
+      isDeleted: { $ne: true }
+    }).populate('uploadedBy', 'name email profilePic');
     if (!video) return res.status(404).json({ error: 'Video not found' });
     
-    // Ensure URLs are full URLs
+    const videoObj = video.toObject();
+    
+    // Ensure URLs are full URLs and provide both thumbnailUrl and thumbnail for compatibility
+    const thumbnailUrl = ensureFullUrl(videoObj.thumbnailUrl);
+    
+    // Log thumbnail processing for debugging
+    if (!videoObj.thumbnailUrl) {
+      console.warn('⚠️ Video missing thumbnail in getVideoById:', {
+        id: videoObj._id,
+        title: videoObj.title
+      });
+    }
+    
     const videoWithFullUrls = {
-      ...video.toObject(),
-      videoUrl: ensureFullUrl(video.videoUrl),
-      thumbnailUrl: ensureFullUrl(video.thumbnailUrl)
+      ...videoObj,
+      videoUrl: ensureFullUrl(videoObj.videoUrl),
+      thumbnailUrl: thumbnailUrl,
+      thumbnail: thumbnailUrl // Also provide as 'thumbnail' for frontend compatibility
     };
+    
+    console.log('📹 Video by ID response:', {
+      id: videoObj._id,
+      title: videoObj.title,
+      thumbnailUrl: videoWithFullUrls.thumbnailUrl,
+      thumbnail: videoWithFullUrls.thumbnail
+    });
     
     res.json(videoWithFullUrls);
   } catch (err) {
@@ -183,6 +253,11 @@ const getMyVideos = async (req, res) => {
     if (contentType && ['reel', 'full'].includes(contentType)) {
       query.contentType = contentType;
     }
+    // Teachers can see their deleted videos if includeDeleted=true, otherwise exclude them
+    const includeDeleted = req.query.includeDeleted === 'true';
+    if (!includeDeleted) {
+      query.isDeleted = { $ne: true };
+    }
 
     // Calculate pagination
     const skip = (page - 1) * limit;
@@ -204,13 +279,33 @@ const getMyVideos = async (req, res) => {
         ? videoObj.videoUrl.split('/uploads/')[1]
         : videoObj.videoUrl.replace('/uploads/', '');
 
+      // Ensure thumbnail URL is properly generated
+      const thumbnailUrl = ensureFullUrl(videoObj.thumbnailUrl);
+      
+      // Log thumbnail processing for debugging
+      if (!videoObj.thumbnailUrl) {
+        console.warn('⚠️ Video missing thumbnail:', {
+          id: videoObj._id,
+          title: videoObj.title
+        });
+      } else {
+        console.log('📹 Processing video for my videos:', {
+          id: videoObj._id,
+          title: videoObj.title,
+          originalThumbnailUrl: videoObj.thumbnailUrl,
+          processedThumbnail: thumbnailUrl,
+          hasThumbnail: !!videoObj.thumbnailUrl
+        });
+      }
+
       return {
         id: videoObj._id,
         title: videoObj.title,
         description: videoObj.description,
         contentType: videoObj.contentType,
         category: videoObj.category,
-        thumbnail: ensureFullUrl(videoObj.thumbnailUrl),
+        thumbnail: thumbnailUrl, // Frontend expects 'thumbnail'
+        thumbnailUrl: thumbnailUrl, // Also provide 'thumbnailUrl' for compatibility
         videoUrl: ensureFullUrl(videoObj.videoUrl),
         filename: filename,
         creator: {
@@ -334,8 +429,8 @@ const streamAllVideos = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const page = parseInt(req.query.page) || 1;
 
-    // Build query
-    let query = {};
+    // Build query - exclude deleted videos for students
+    let query = { isDeleted: { $ne: true } };
     if (contentType && ['reel', 'full'].includes(contentType)) {
       query.contentType = contentType;
     }
@@ -384,13 +479,33 @@ const streamAllVideos = async (req, res) => {
         ? videoObj.videoUrl.split('/uploads/')[1]
         : videoObj.videoUrl.replace('/uploads/', '');
 
+      // Ensure thumbnail URL is properly generated
+      const thumbnailUrl = ensureFullUrl(videoObj.thumbnailUrl);
+      
+      // Log thumbnail processing for debugging
+      if (!videoObj.thumbnailUrl) {
+        console.warn('⚠️ Video missing thumbnail:', {
+          id: videoObj._id,
+          title: videoObj.title
+        });
+      } else {
+        console.log('📹 Processing video for stream:', {
+          id: videoObj._id,
+          title: videoObj.title,
+          originalThumbnailUrl: videoObj.thumbnailUrl,
+          processedThumbnail: thumbnailUrl,
+          hasThumbnail: !!videoObj.thumbnailUrl
+        });
+      }
+
       return {
         id: videoObj._id,
         title: videoObj.title,
         description: videoObj.description,
         contentType: videoObj.contentType,
         category: videoObj.category,
-        thumbnail: ensureFullUrl(videoObj.thumbnailUrl),
+        thumbnail: thumbnailUrl, // Frontend expects 'thumbnail'
+        thumbnailUrl: thumbnailUrl, // Also provide 'thumbnailUrl' for compatibility
         videoUrl: ensureFullUrl(videoObj.videoUrl),
         filename: filename, // For direct streaming
         creator: {
@@ -478,8 +593,16 @@ const deleteVideo = async (req, res) => {
       }
     }
 
-    // Delete the video record from database
-    await Video.findByIdAndDelete(videoId);
+    // Soft delete: Mark as deleted instead of removing from database
+    video.isDeleted = true;
+    video.deletedAt = new Date();
+    await video.save();
+    
+    console.log('🗑️ Video soft deleted:', {
+      videoId: videoId,
+      title: video.title,
+      deletedAt: video.deletedAt
+    });
     
     res.json({ 
       success: true,
@@ -495,7 +618,119 @@ const deleteVideo = async (req, res) => {
   }
 };
 
+// Update Video (Teacher can update their own videos)
+const updateVideo = async (req, res) => {
+  try {
+    const videoId = req.params.id;
+    const userId = req.user.userId; // From JWT token
+    const { title, description, category, customCategory, contentType } = req.body;
+    const videoFile = req.files?.video?.[0];
+    const thumbFile = req.files?.thumbnail?.[0];
 
+    console.log('📝 Update video request:', {
+      videoId,
+      userId,
+      title,
+      description,
+      contentType,
+      hasVideoFile: !!videoFile,
+      hasThumbFile: !!thumbFile
+    });
+
+    // Find the video first
+    const video = await Video.findById(videoId);
+    if (!video) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Video not found' 
+      });
+    }
+
+    // Check if video is deleted
+    if (video.isDeleted) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Video has been deleted' 
+      });
+    }
+
+    // Check if user owns the video
+    if (video.uploadedBy.toString() !== userId) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Unauthorized - You can only update your own videos' 
+      });
+    }
+
+    // Update fields if provided
+    if (title) video.title = title;
+    if (description) video.description = description;
+    if (contentType && ['reel', 'full'].includes(contentType)) {
+      video.contentType = contentType;
+    }
+    if (category !== undefined) {
+      video.category = Array.isArray(category) ? category : category.split(',');
+    }
+    if (customCategory !== undefined) video.customCategory = customCategory;
+
+    // Update video file if provided
+    if (videoFile) {
+      // Delete old video file if exists
+      const oldVideoFilename = video.videoUrl.includes('/uploads/') 
+        ? video.videoUrl.split('/uploads/')[1] 
+        : video.videoUrl.replace('/uploads/', '');
+      const oldVideoPath = path.join(process.cwd(), 'uploads', oldVideoFilename);
+      if (fs.existsSync(oldVideoPath)) {
+        fs.unlinkSync(oldVideoPath);
+        console.log('🗑️ Deleted old video file:', oldVideoFilename);
+      }
+      video.videoUrl = generateFileUrl(videoFile.filename);
+    }
+
+    // Update thumbnail if provided
+    if (thumbFile) {
+      // Delete old thumbnail if exists
+      if (video.thumbnailUrl) {
+        const oldThumbFilename = video.thumbnailUrl.includes('/uploads/') 
+          ? video.thumbnailUrl.split('/uploads/')[1] 
+          : video.thumbnailUrl.replace('/uploads/', '');
+        const oldThumbPath = path.join(process.cwd(), 'uploads', oldThumbFilename);
+        if (fs.existsSync(oldThumbPath)) {
+          fs.unlinkSync(oldThumbPath);
+          console.log('🗑️ Deleted old thumbnail:', oldThumbFilename);
+        }
+      }
+      video.thumbnailUrl = generateFileUrl(thumbFile.filename);
+    }
+
+    await video.save();
+
+    console.log('✅ Video updated successfully:', {
+      videoId: video._id,
+      title: video.title,
+      contentType: video.contentType
+    });
+
+    const videoObj = video.toObject();
+    res.json({
+      success: true,
+      message: 'Video updated successfully',
+      video: {
+        ...videoObj,
+        videoUrl: ensureFullUrl(videoObj.videoUrl),
+        thumbnailUrl: ensureFullUrl(videoObj.thumbnailUrl),
+        thumbnail: ensureFullUrl(videoObj.thumbnailUrl)
+      }
+    });
+  } catch (err) {
+    console.error('Update video error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to update video',
+      details: err.message 
+    });
+  }
+};
 
 //like video
 // PUT /api/videos/:id/like
@@ -586,12 +821,31 @@ const getVideosByType = async (req, res) => {
       .populate('uploadedBy', 'name email profilePic')
       .sort({ createdAt: -1 }); // Latest first
 
-    // Ensure all URLs are full URLs
-    const videosWithFullUrls = videos.map(video => ({
-      ...video.toObject(),
-      videoUrl: ensureFullUrl(video.videoUrl),
-      thumbnailUrl: ensureFullUrl(video.thumbnailUrl)
-    }));
+    console.log(`📹 getVideosByType (${type}): Found ${videos.length} videos`);
+
+    // Ensure all URLs are full URLs and provide both thumbnailUrl and thumbnail for compatibility
+    const videosWithFullUrls = videos.map(video => {
+      const videoObj = video.toObject();
+      const thumbnailUrl = ensureFullUrl(videoObj.thumbnailUrl);
+      
+      // Log thumbnail processing for debugging
+      if (!videoObj.thumbnailUrl) {
+        console.warn('⚠️ Video missing thumbnail in getVideosByType:', {
+          id: videoObj._id,
+          title: videoObj.title,
+          type: type
+        });
+      }
+      
+      return {
+        ...videoObj,
+        videoUrl: ensureFullUrl(videoObj.videoUrl),
+        thumbnailUrl: thumbnailUrl,
+        thumbnail: thumbnailUrl // Also provide as 'thumbnail' for frontend compatibility
+      };
+    });
+    
+    console.log(`📹 getVideosByType (${type}): Returning ${videosWithFullUrls.length} videos with thumbnails`);
 
     res.json({
       success: true,
@@ -711,6 +965,7 @@ export default {
   getMyVideos,
   streamVideo,
   streamAllVideos,
+  updateVideo,
   deleteVideo,
   likeVideo,
   getLikes,

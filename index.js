@@ -8,10 +8,10 @@ import videoRoutes from './routes/videoRoutes.js';
 import quizRoutes from './routes/quizRoutes.js';
 import courseRoutes from './routes/courseRoutes.js';
 import playlistRoutes from './routes/playlistRoute.js';
-import paymentRoutes from './routes/paymentRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import teacherVerificationRoutes from './routes/teacherVerificationRoutes.js';
+import supportRoutes from './routes/supportRoutes.js';
 import { apiLimiter } from './Middleware/rateLimiter.js';
 import { getMyCourses } from './controllers/courseController.js';
 import authenticateToken from './Middleware/userAuth.js';
@@ -224,7 +224,7 @@ app.get('/debug/uploads', (req, res) => {
         name: file,
         size: stats.size,
         created: stats.birthtime,
-        url: `http://172.20.10.4:3002/uploads/${file}`
+        url: `http://192.168.31.186:3002/uploads/${file}`
       };
     });
 
@@ -254,10 +254,10 @@ app.use('/api/videos', videoRoutes);
 app.use('/api/quizzes', quizRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/playlists', playlistRoutes);
-app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/verification', teacherVerificationRoutes);
+app.use('/api/support', supportRoutes);
 
 // Basic route
 app.get('/', (req, res) => {
@@ -274,7 +274,6 @@ app.get('/', (req, res) => {
       videos: '/api/videos',
       courses: '/api/courses',
       playlists: '/api/playlists',
-      payments: '/api/payments',
       admin: '/api/admin'
     }
   });

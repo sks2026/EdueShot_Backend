@@ -46,7 +46,7 @@ const quizEnrollmentSchema = new mongoose.Schema({
   // Payment method
   paymentMethod: {
     type: String,
-    default: 'razorpay'
+    default: 'other'
   },
   // Quiz attempt status
   hasAttempted: {

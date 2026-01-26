@@ -1,7 +1,7 @@
 import express from 'express';
 import adminController from '../controllers/adminController.js';
 import authenticateToken, { adminOnly } from '../Middleware/userAuth.js';
-import { courseUpload, handleUploadError } from '../Middleware/upload.js';
+import { courseUpload, videoUpload, handleUploadError } from '../Middleware/upload.js';
 
 const router = express.Router();
 
@@ -44,8 +44,7 @@ router.post('/courses', authenticateToken, adminOnly, courseUpload, handleUpload
 router.put('/courses/:id', authenticateToken, adminOnly, courseUpload, handleUploadError, adminController.updateCourse);
 router.delete('/courses/:id', authenticateToken, adminOnly, adminController.deleteCourse);
 
-// Payment management (admin only)
-router.get('/payments', authenticateToken, adminOnly, adminController.getAllPayments);
+// Payment management removed (payment system removed)
 
 // Quiz management (admin only)
 router.get('/quizzes', authenticateToken, adminOnly, adminController.getAllQuizzes);
@@ -63,6 +62,86 @@ router.delete('/quizzes/:id', authenticateToken, adminOnly, adminController.dele
 
 // Video management (admin only)
 router.get('/videos', authenticateToken, adminOnly, adminController.getAllVideos);
+router.post('/videos', authenticateToken, adminOnly, videoUpload, handleUploadError, adminController.createVideo);
+router.put('/videos/:id', authenticateToken, adminOnly, videoUpload, handleUploadError, adminController.updateVideo);
+router.delete('/videos/:id', authenticateToken, adminOnly, adminController.deleteVideo);
+
+// Withdrawal management (admin only)
+router.get('/withdrawals', authenticateToken, adminOnly, adminController.getAllWithdrawals);
+router.put('/withdrawals/:id/approve', authenticateToken, adminOnly, adminController.approveWithdrawal);
+router.put('/withdrawals/:id/reject', authenticateToken, adminOnly, adminController.rejectWithdrawal);
+router.put('/withdrawals/:id/complete', authenticateToken, adminOnly, adminController.completeWithdrawal);
+
+// Support & Feedback management (admin only) - using support controller
+import {
+  upsertSupportContent,
+  getAllSupportContent,
+  getAllFeedback,
+  respondToFeedback,
+  deleteAttachment
+} from '../controllers/supportController.js';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+
+// Setup multer for support content attachments
+const uploadsDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const filename = Date.now() + '-' + file.originalname;
+    cb(null, filename);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedExtensions = /pdf|doc|docx|txt|jpg|jpeg|png|gif/;
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedExtensions.test(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF, DOC, DOCX, TXT, and image files allowed!'));
+    }
+  }
+});
+
+router.post('/support/content', authenticateToken, adminOnly, upload.array('attachments', 10), upsertSupportContent);
+router.get('/support/content', authenticateToken, adminOnly, getAllSupportContent);
+router.delete('/support/content/:type/attachment/:attachmentId', authenticateToken, adminOnly, deleteAttachment);
+router.get('/support/feedback', authenticateToken, adminOnly, getAllFeedback);
+router.post('/support/feedback/:feedbackId/respond', authenticateToken, adminOnly, respondToFeedback);
+router.get('/support/feedback/debug', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { Feedback } = await import('../Models/feedbackModel.js');
+    const feedbacks = await Feedback.find({}).populate('userId', 'name email role').select('userId type subject status createdAt');
+    res.json({
+      success: true,
+      count: feedbacks.length,
+      feedbacks: feedbacks.map(f => ({
+        id: f._id,
+        userId: f.userId?._id?.toString() || f.userId?.toString(),
+        userName: f.userId?.name || 'N/A',
+        userEmail: f.userId?.email || 'N/A',
+        type: f.type,
+        subject: f.subject,
+        status: f.status,
+        createdAt: f.createdAt
+      }))
+    });
+  } catch (error) {
+    console.error('Debug feedback error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 export default router;
 

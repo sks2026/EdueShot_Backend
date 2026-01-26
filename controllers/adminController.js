@@ -1,9 +1,11 @@
 import User from '../Models/userModel.js';
 import { Course } from '../Models/courseModel.js';
-import { Payment } from '../Models/paymentModel.js';
 import Quiz from '../Models/quiz.js';
 import QuizAttempt from '../Models/quizAttemptModel.js';
 import Video from '../Models/videoModel.js';
+import { Withdrawal } from '../Models/withdrawalModel.js';
+import { createNotification } from './notificationController.js';
+import AdminNotification from '../Models/adminNotificationModel.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
@@ -115,18 +117,12 @@ const getDashboardStats = async (req, res) => {
     const totalCourses = await Course.countDocuments();
     const coursesWithStudents = await Course.countDocuments({ students: { $exists: true, $ne: [] } });
 
-    // Get payment statistics
-    const totalPayments = await Payment.countDocuments();
-    const completedPayments = await Payment.countDocuments({ status: 'completed' });
-    const pendingPayments = await Payment.countDocuments({ status: 'pending' });
-    const failedPayments = await Payment.countDocuments({ status: 'failed' });
-    
-    // Calculate total revenue
-    const revenueData = await Payment.aggregate([
-      { $match: { status: 'completed' } },
-      { $group: { _id: null, totalRevenue: { $sum: '$amount' } } }
-    ]);
-    const totalRevenue = revenueData.length > 0 ? revenueData[0].totalRevenue : 0;
+    // Payment statistics removed (payment system removed)
+    const totalPayments = 0;
+    const completedPayments = 0;
+    const pendingPayments = 0;
+    const failedPayments = 0;
+    const totalRevenue = 0;
 
     // Get quiz statistics
     const totalQuizzes = await Quiz.countDocuments();
@@ -135,6 +131,26 @@ const getDashboardStats = async (req, res) => {
     const totalVideos = await Video.countDocuments();
     const totalReels = await Video.countDocuments({ contentType: 'reel' });
     const totalFullVideos = await Video.countDocuments({ contentType: 'full' });
+
+    // Get withdrawal statistics
+    const totalWithdrawals = await Withdrawal.countDocuments();
+    const pendingWithdrawals = await Withdrawal.countDocuments({ status: 'pending' });
+    const approvedWithdrawals = await Withdrawal.countDocuments({ status: 'approved' });
+    const completedWithdrawals = await Withdrawal.countDocuments({ status: 'completed' });
+    
+    // Calculate total withdrawal amount
+    const withdrawalData = await Withdrawal.aggregate([
+      { $match: { status: { $in: ['completed', 'approved'] } } },
+      { $group: { _id: null, totalAmount: { $sum: '$amount' } } }
+    ]);
+    const totalWithdrawalAmount = withdrawalData.length > 0 ? withdrawalData[0].totalAmount : 0;
+
+    // Get unread admin notifications count
+    const unreadAdminNotifications = await AdminNotification.countDocuments({ status: 'unread' });
+    const unreadWithdrawalNotifications = await AdminNotification.countDocuments({ 
+      type: 'withdrawal', 
+      status: 'unread' 
+    });
 
     // Get recent activities (last 7 days)
     const sevenDaysAgo = new Date();
@@ -149,10 +165,7 @@ const getDashboardStats = async (req, res) => {
       createdAt: { $gte: sevenDaysAgo }
     });
     
-    const recentPayments = await Payment.countDocuments({
-      createdAt: { $gte: sevenDaysAgo },
-      status: 'completed'
-    });
+    const recentPayments = 0; // Payment system removed
 
     res.json({
       success: true,
@@ -186,6 +199,17 @@ const getDashboardStats = async (req, res) => {
           total: totalVideos,
           reels: totalReels,
           fullVideos: totalFullVideos
+        },
+        withdrawals: {
+          total: totalWithdrawals,
+          pending: pendingWithdrawals,
+          approved: approvedWithdrawals,
+          completed: completedWithdrawals,
+          totalAmount: totalWithdrawalAmount
+        },
+        notifications: {
+          unread: unreadAdminNotifications,
+          unreadWithdrawals: unreadWithdrawalNotifications
         }
       }
     });
@@ -541,7 +565,7 @@ const getCourseById = async (req, res) => {
 // Helper function to generate full URL for uploaded files
 const generateFileUrl = (filename) => {
   if (!filename) return null;
-  const defaultUrl = 'http://172.20.10.4:3002';
+  const defaultUrl = 'http://192.168.31.186:3002';
   let baseUrl = process.env.BASE_URL || defaultUrl;
   
   // Ensure BASE_URL has proper protocol
@@ -549,6 +573,9 @@ const generateFileUrl = (filename) => {
     console.warn('⚠️ Invalid BASE_URL in adminController, using default:', defaultUrl);
     baseUrl = defaultUrl;
   }
+  
+  // Remove any spaces from baseUrl
+  baseUrl = baseUrl.replace(/\s+/g, '');
   
   return `${baseUrl}/uploads/${filename}`;
 };
@@ -968,48 +995,19 @@ const deleteCourse = async (req, res) => {
   }
 };
 
-// Get All Payments
+// Get All Payments - Removed (payment system removed)
 const getAllPayments = async (req, res) => {
-  try {
-    const { page = 1, limit = 10, status, startDate, endDate } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    const query = {};
-    if (status) query.status = status;
-    if (startDate || endDate) {
-      query.createdAt = {};
-      if (startDate) query.createdAt.$gte = new Date(startDate);
-      if (endDate) query.createdAt.$lte = new Date(endDate);
-    }
-
-    const payments = await Payment.find(query)
-      .populate('userId', 'name email')
-      .populate('courseId', 'title')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await Payment.countDocuments(query);
-
-    res.json({
-      success: true,
-      payments,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
-    });
-
-  } catch (error) {
-    console.error('Get all payments error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error while fetching payments',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
+  res.json({
+    success: true,
+    payments: [],
+    pagination: {
+      page: 1,
+      limit: 10,
+      total: 0,
+      pages: 0
+    },
+    message: 'Payment system has been removed'
+  });
 };
 
 // Get All Quizzes
@@ -1162,7 +1160,12 @@ const createQuiz = async (req, res) => {
       category,
       totalMarks,
       tags,
-      price
+      price,
+      isPaid,
+      entryFee,
+      prizePool,
+      prizeDistribution,
+      maxParticipants
     } = req.body;
 
     // Validate required fields
@@ -1248,6 +1251,59 @@ const createQuiz = async (req, res) => {
       });
     }
 
+    // Validate paid quiz requirements if isPaid is true
+    if (isPaid) {
+      if (!entryFee || entryFee <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Entry fee is required for paid quizzes and must be greater than 0.'
+        });
+      }
+      if (!prizePool || prizePool <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Prize pool is required for paid quizzes and must be greater than 0.'
+        });
+      }
+      
+      // Validate prize distribution
+      if (prizeDistribution) {
+        const { first, second, third } = prizeDistribution;
+        if (first === undefined || second === undefined || third === undefined) {
+          return res.status(400).json({
+            success: false,
+            message: 'Prize distribution must include first, second, and third place percentages.'
+          });
+        }
+        
+        const firstNum = typeof first === 'string' ? parseFloat(first) : first;
+        const secondNum = typeof second === 'string' ? parseFloat(second) : second;
+        const thirdNum = typeof third === 'string' ? parseFloat(third) : third;
+        
+        if (isNaN(firstNum) || isNaN(secondNum) || isNaN(thirdNum)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Prize distribution percentages must be valid numbers.'
+          });
+        }
+        
+        if (firstNum < 0 || secondNum < 0 || thirdNum < 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Prize distribution percentages cannot be negative.'
+          });
+        }
+        
+        const total = firstNum + secondNum + thirdNum;
+        if (Math.abs(total - 100) > 0.01) { // Allow small floating point differences
+          return res.status(400).json({
+            success: false,
+            message: `Prize distribution percentages must add up to 100%. Current total: ${total.toFixed(2)}%`
+          });
+        }
+      }
+    }
+
     // Create quiz
     const quizData = {
       title,
@@ -1271,6 +1327,39 @@ const createQuiz = async (req, res) => {
       if (!isNaN(priceNum) && priceNum >= 0) {
         quizData.price = priceNum;
       }
+    }
+
+    // Add paid quiz fields (admin can create paid quizzes without permission check)
+    if (isPaid) {
+      quizData.isPaid = true;
+      quizData.entryFee = typeof entryFee === 'string' ? parseFloat(entryFee) : entryFee;
+      quizData.prizePool = typeof prizePool === 'string' ? parseFloat(prizePool) : prizePool;
+      
+      // Set prize distribution
+      if (prizeDistribution && prizeDistribution.first !== undefined) {
+        quizData.prizeDistribution = {
+          first: typeof prizeDistribution.first === 'string' ? parseFloat(prizeDistribution.first) : prizeDistribution.first,
+          second: typeof prizeDistribution.second === 'string' ? parseFloat(prizeDistribution.second) : prizeDistribution.second,
+          third: typeof prizeDistribution.third === 'string' ? parseFloat(prizeDistribution.third) : prizeDistribution.third
+        };
+      } else {
+        quizData.prizeDistribution = {
+          first: 50,
+          second: 30,
+          third: 20
+        };
+      }
+      
+      if (maxParticipants) {
+        const maxParticipantsNum = typeof maxParticipants === 'string' ? parseInt(maxParticipants) : maxParticipants;
+        if (!isNaN(maxParticipantsNum) && maxParticipantsNum > 0) {
+          quizData.maxParticipants = maxParticipantsNum;
+        }
+      }
+    } else {
+      quizData.isPaid = false;
+      quizData.entryFee = 0;
+      quizData.prizePool = 0;
     }
 
     const quiz = new Quiz(quizData);
@@ -1362,7 +1451,12 @@ const updateQuiz = async (req, res) => {
       category,
       totalMarks,
       tags,
-      price
+      price,
+      isPaid,
+      entryFee,
+      prizePool,
+      prizeDistribution,
+      maxParticipants
     } = req.body;
 
     const quiz = await Quiz.findById(id);
@@ -1488,6 +1582,88 @@ const updateQuiz = async (req, res) => {
       }
     }
 
+    // Update paid quiz fields if provided
+    if (isPaid !== undefined) {
+      quiz.isPaid = isPaid;
+      
+      if (isPaid) {
+        // Validate paid quiz requirements
+        if (entryFee !== undefined) {
+          const entryFeeNum = typeof entryFee === 'string' ? parseFloat(entryFee) : entryFee;
+          if (isNaN(entryFeeNum) || entryFeeNum <= 0) {
+            return res.status(400).json({
+              success: false,
+              message: 'Entry fee must be a valid number greater than 0.'
+            });
+          }
+          quiz.entryFee = entryFeeNum;
+        }
+        
+        if (prizePool !== undefined) {
+          const prizePoolNum = typeof prizePool === 'string' ? parseFloat(prizePool) : prizePool;
+          if (isNaN(prizePoolNum) || prizePoolNum <= 0) {
+            return res.status(400).json({
+              success: false,
+              message: 'Prize pool must be a valid number greater than 0.'
+            });
+          }
+          quiz.prizePool = prizePoolNum;
+        }
+        
+        if (prizeDistribution) {
+          // Validate prize distribution
+          const { first, second, third } = prizeDistribution;
+          if (first !== undefined && second !== undefined && third !== undefined) {
+            const firstNum = typeof first === 'string' ? parseFloat(first) : first;
+            const secondNum = typeof second === 'string' ? parseFloat(second) : second;
+            const thirdNum = typeof third === 'string' ? parseFloat(third) : third;
+            
+            if (isNaN(firstNum) || isNaN(secondNum) || isNaN(thirdNum)) {
+              return res.status(400).json({
+                success: false,
+                message: 'Prize distribution percentages must be valid numbers.'
+              });
+            }
+            
+            if (firstNum < 0 || secondNum < 0 || thirdNum < 0) {
+              return res.status(400).json({
+                success: false,
+                message: 'Prize distribution percentages cannot be negative.'
+              });
+            }
+            
+            const total = firstNum + secondNum + thirdNum;
+            if (Math.abs(total - 100) > 0.01) {
+              return res.status(400).json({
+                success: false,
+                message: `Prize distribution percentages must add up to 100%. Current total: ${total.toFixed(2)}%`
+              });
+            }
+            
+            quiz.prizeDistribution = {
+              first: firstNum,
+              second: secondNum,
+              third: thirdNum
+            };
+          }
+        }
+        
+        if (maxParticipants !== undefined) {
+          const maxParticipantsNum = typeof maxParticipants === 'string' ? parseInt(maxParticipants) : maxParticipants;
+          if (!isNaN(maxParticipantsNum) && maxParticipantsNum > 0) {
+            quiz.maxParticipants = maxParticipantsNum;
+          } else if (maxParticipantsNum === 0 || maxParticipants === '') {
+            quiz.maxParticipants = 0; // Unlimited
+          }
+        }
+      } else {
+        // If setting to free, reset paid quiz fields
+        quiz.entryFee = 0;
+        quiz.prizePool = 0;
+        quiz.maxParticipants = 0;
+      }
+    }
+
     await quiz.save();
 
     // Populate createdBy
@@ -1593,9 +1769,19 @@ const getAllVideos = async (req, res) => {
 
     const total = await Video.countDocuments(query);
 
+    // Ensure full URLs for video and thumbnail
+    const videosWithFullUrls = videos.map(video => {
+      const videoObj = video.toObject();
+      return {
+        ...videoObj,
+        videoUrl: generateFileUrl(videoObj.videoUrl?.replace(/.*\/uploads\//, '') || ''),
+        thumbnailUrl: videoObj.thumbnailUrl ? generateFileUrl(videoObj.thumbnailUrl?.replace(/.*\/uploads\//, '') || '') : null
+      };
+    });
+
     res.json({
       success: true,
-      videos,
+      videos: videosWithFullUrls,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -1609,6 +1795,181 @@ const getAllVideos = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error while fetching videos',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Create Video (Admin can create video for any teacher)
+const createVideo = async (req, res) => {
+  try {
+    const { title, description, category, customCategory, contentType, teacherId } = req.body;
+    const videoFile = req.files?.video?.[0];
+    const thumbFile = req.files?.thumbnail?.[0];
+
+    if (!title || !description) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title and description are required'
+      });
+    }
+
+    if (!teacherId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Teacher ID is required'
+      });
+    }
+
+    // Verify teacher exists
+    const teacher = await User.findById(teacherId);
+    if (!teacher || teacher.role !== 'teacher') {
+      return res.status(404).json({
+        success: false,
+        message: 'Teacher not found'
+      });
+    }
+
+    if (!videoFile) {
+      return res.status(400).json({
+        success: false,
+        message: 'Video file is required'
+      });
+    }
+
+    const videoContentType = contentType && ['full', 'reel'].includes(contentType) ? contentType : 'full';
+
+    const newVideo = new Video({
+      title,
+      description,
+      contentType: videoContentType,
+      category: category ? (Array.isArray(category) ? category : category.split(',')) : [],
+      customCategory,
+      videoUrl: generateFileUrl(videoFile.filename),
+      thumbnailUrl: thumbFile ? generateFileUrl(thumbFile.filename) : null,
+      uploadedBy: teacherId
+    });
+
+    await newVideo.save();
+
+    const videoObj = newVideo.toObject();
+    res.status(201).json({
+      success: true,
+      message: 'Video created successfully',
+      video: {
+        ...videoObj,
+        videoUrl: generateFileUrl(videoFile.filename),
+        thumbnailUrl: thumbFile ? generateFileUrl(thumbFile.filename) : null
+      }
+    });
+
+  } catch (error) {
+    console.error('Create video error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while creating video',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Update Video (Admin can update any video)
+const updateVideo = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, category, customCategory, contentType, teacherId } = req.body;
+    const videoFile = req.files?.video?.[0];
+    const thumbFile = req.files?.thumbnail?.[0];
+
+    const video = await Video.findById(id);
+    if (!video) {
+      return res.status(404).json({
+        success: false,
+        message: 'Video not found'
+      });
+    }
+
+    // Update fields
+    if (title) video.title = title;
+    if (description) video.description = description;
+    if (contentType && ['full', 'reel'].includes(contentType)) {
+      video.contentType = contentType;
+    }
+    if (category !== undefined) {
+      video.category = Array.isArray(category) ? category : category.split(',');
+    }
+    if (customCategory !== undefined) video.customCategory = customCategory;
+
+    // Update video file if provided
+    if (videoFile) {
+      video.videoUrl = generateFileUrl(videoFile.filename);
+    }
+
+    // Update thumbnail if provided
+    if (thumbFile) {
+      video.thumbnailUrl = generateFileUrl(thumbFile.filename);
+    }
+
+    // Update teacher if provided
+    if (teacherId) {
+      const teacher = await User.findById(teacherId);
+      if (!teacher || teacher.role !== 'teacher') {
+        return res.status(404).json({
+          success: false,
+          message: 'Teacher not found'
+        });
+      }
+      video.uploadedBy = teacherId;
+    }
+
+    await video.save();
+
+    const videoObj = video.toObject();
+    res.json({
+      success: true,
+      message: 'Video updated successfully',
+      video: {
+        ...videoObj,
+        videoUrl: videoObj.videoUrl,
+        thumbnailUrl: videoObj.thumbnailUrl
+      }
+    });
+
+  } catch (error) {
+    console.error('Update video error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while updating video',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Delete Video (Admin can delete any video)
+const deleteVideo = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const video = await Video.findById(id);
+    if (!video) {
+      return res.status(404).json({
+        success: false,
+        message: 'Video not found'
+      });
+    }
+
+    await Video.findByIdAndDelete(id);
+
+    res.json({
+      success: true,
+      message: 'Video deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete video error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while deleting video',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -1760,11 +2121,34 @@ const getAllStudents = async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit));
 
+    // Get financial stats for each student
+    const studentsWithStats = await Promise.all(
+      students.map(async (student) => {
+        // Payment system removed
+        const totalSpent = 0;
+        const totalPurchases = 0;
+
+        // Get enrolled courses count
+        const enrolledCourses = await Course.countDocuments({
+          students: student._id
+        });
+
+        return {
+          ...student.toObject(),
+          financialStats: {
+            totalSpent,
+            totalPurchases,
+            enrolledCourses
+          }
+        };
+      })
+    );
+
     const total = await User.countDocuments(query);
 
     res.json({
       success: true,
-      students,
+      students: studentsWithStats,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -1954,11 +2338,49 @@ const getAllTeachers = async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit));
 
+    // Get financial stats for each teacher
+    const teachersWithStats = await Promise.all(
+      teachers.map(async (teacher) => {
+        // Get all courses by this teacher
+        const teacherCourses = await Course.find({ teacher: teacher._id }).select('_id');
+        const courseIds = teacherCourses.map(course => course._id);
+
+        // Payment system removed
+        const totalEarnings = 0;
+
+        // Get withdrawals
+        const withdrawals = await Withdrawal.find({ userId: teacher._id });
+        const totalWithdrawn = withdrawals
+          .filter(w => w.status === 'completed')
+          .reduce((sum, w) => sum + w.amount, 0);
+        const pendingWithdrawals = withdrawals
+          .filter(w => w.status === 'pending')
+          .reduce((sum, w) => sum + w.amount, 0);
+        const totalWithdrawals = withdrawals
+          .reduce((sum, w) => sum + w.amount, 0);
+
+        const availableBalance = totalEarnings - totalWithdrawn - pendingWithdrawals;
+
+        return {
+          ...teacher.toObject(),
+          financialStats: {
+            totalEarnings,
+            totalWithdrawn,
+            pendingWithdrawals,
+            totalWithdrawals,
+            availableBalance,
+            totalSales: payments.length,
+            totalCourses: teacherCourses.length
+          }
+        };
+      })
+    );
+
     const total = await User.countDocuments(query);
 
     res.json({
       success: true,
-      teachers,
+      teachers: teachersWithStats,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -2336,6 +2758,313 @@ const getTeachersPaidQuizStatus = async (req, res) => {
   }
 };
 
+// Get All Withdrawals (admin only)
+const getAllWithdrawals = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, status, userId, paymentMethod } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build query
+    const query = {};
+    if (status) query.status = status;
+    if (userId) query.userId = userId;
+    if (paymentMethod) query.paymentMethod = paymentMethod;
+
+    const withdrawals = await Withdrawal.find(query)
+      .populate('userId', 'name email role')
+      .populate('processedBy', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Withdrawal.countDocuments(query);
+
+    res.json({
+      success: true,
+      withdrawals,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('Get all withdrawals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while fetching withdrawals',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Approve Withdrawal (admin only)
+const approveWithdrawal = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.userId;
+
+    const withdrawal = await Withdrawal.findById(id)
+      .populate('userId', 'name email role');
+
+    if (!withdrawal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Withdrawal request not found'
+      });
+    }
+
+    if (withdrawal.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Withdrawal request is already ${withdrawal.status}. Only pending withdrawals can be approved.`
+      });
+    }
+
+    // Update withdrawal status
+    withdrawal.status = 'approved';
+    withdrawal.processedBy = adminId;
+    withdrawal.processedAt = new Date();
+
+    await withdrawal.save();
+
+    // Update admin notification status
+    try {
+      await AdminNotification.updateMany(
+        { 
+          type: 'withdrawal',
+          'data.withdrawalId': withdrawal._id.toString(),
+          status: { $ne: 'actioned' }
+        },
+        { 
+          status: 'actioned',
+          handledBy: adminId,
+          handledAt: new Date(),
+          actionTaken: 'approved'
+        }
+      );
+    } catch (adminNotifError) {
+      console.error('Error updating admin notification:', adminNotifError);
+    }
+
+    // Send notification to user
+    try {
+      await createNotification({
+        recipientId: withdrawal.userId._id,
+        recipientRole: withdrawal.userId.role,
+        type: 'system',
+        title: 'Withdrawal Request Approved',
+        message: `Your withdrawal request of ₹${withdrawal.amount} has been approved. The amount will be processed and sent to your account within 48-72 hours.`,
+        fromUserId: adminId,
+        data: {
+          withdrawalId: withdrawal._id.toString(),
+          withdrawalAmount: withdrawal.amount,
+          paymentMethod: withdrawal.paymentMethod
+        }
+      });
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Withdrawal request approved successfully',
+      withdrawal
+    });
+
+  } catch (error) {
+    console.error('Approve withdrawal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while approving withdrawal',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Reject Withdrawal (admin only)
+const rejectWithdrawal = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejectionReason } = req.body;
+    const adminId = req.user.userId;
+
+    const withdrawal = await Withdrawal.findById(id)
+      .populate('userId', 'name email role');
+
+    if (!withdrawal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Withdrawal request not found'
+      });
+    }
+
+    if (withdrawal.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Withdrawal request is already ${withdrawal.status}. Only pending withdrawals can be rejected.`
+      });
+    }
+
+    // Update withdrawal status
+    withdrawal.status = 'rejected';
+    withdrawal.processedBy = adminId;
+    withdrawal.processedAt = new Date();
+    if (rejectionReason) {
+      withdrawal.rejectionReason = rejectionReason;
+    }
+
+    await withdrawal.save();
+
+    // Update admin notification status
+    try {
+      await AdminNotification.updateMany(
+        { 
+          type: 'withdrawal',
+          'data.withdrawalId': withdrawal._id.toString(),
+          status: { $ne: 'actioned' }
+        },
+        { 
+          status: 'actioned',
+          handledBy: adminId,
+          handledAt: new Date(),
+          actionTaken: 'rejected',
+          actionNote: rejectionReason || 'Rejected by admin'
+        }
+      );
+    } catch (adminNotifError) {
+      console.error('Error updating admin notification:', adminNotifError);
+    }
+
+    // Send notification to user
+    try {
+      await createNotification({
+        recipientId: withdrawal.userId._id,
+        recipientRole: withdrawal.userId.role,
+        type: 'system',
+        title: 'Withdrawal Request Rejected',
+        message: `Your withdrawal request of ₹${withdrawal.amount} has been rejected.${rejectionReason ? ` Reason: ${rejectionReason}` : ''}`,
+        fromUserId: adminId,
+        data: {
+          withdrawalId: withdrawal._id.toString(),
+          withdrawalAmount: withdrawal.amount,
+          rejectionReason: rejectionReason || 'No reason provided'
+        }
+      });
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Withdrawal request rejected successfully',
+      withdrawal
+    });
+
+  } catch (error) {
+    console.error('Reject withdrawal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while rejecting withdrawal',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Complete Withdrawal (admin only - mark as completed after payment is sent)
+const completeWithdrawal = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { transactionId, remarks } = req.body;
+    const adminId = req.user.userId;
+
+    const withdrawal = await Withdrawal.findById(id)
+      .populate('userId', 'name email role');
+
+    if (!withdrawal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Withdrawal request not found'
+      });
+    }
+
+    if (withdrawal.status !== 'approved') {
+      return res.status(400).json({
+        success: false,
+        message: `Withdrawal request must be approved before it can be completed. Current status: ${withdrawal.status}`
+      });
+    }
+
+    // Update withdrawal status
+    withdrawal.status = 'completed';
+    withdrawal.processedBy = adminId;
+    withdrawal.processedAt = new Date();
+    if (transactionId) {
+      withdrawal.transactionId = transactionId;
+    }
+    if (remarks) {
+      withdrawal.remarks = remarks;
+    }
+
+    await withdrawal.save();
+
+    // Update admin notification status (if not already actioned)
+    try {
+      await AdminNotification.updateMany(
+        { 
+          type: 'withdrawal',
+          'data.withdrawalId': withdrawal._id.toString(),
+          status: { $ne: 'actioned' }
+        },
+        { 
+          status: 'actioned',
+          handledBy: adminId,
+          handledAt: new Date(),
+          actionTaken: 'approved',
+          actionNote: remarks || (transactionId ? `Transaction ID: ${transactionId}` : 'Completed')
+        }
+      );
+    } catch (adminNotifError) {
+      console.error('Error updating admin notification:', adminNotifError);
+    }
+
+    // Send notification to user
+    try {
+      await createNotification({
+        recipientId: withdrawal.userId._id,
+        recipientRole: withdrawal.userId.role,
+        type: 'system',
+        title: 'Withdrawal Completed',
+        message: `Your withdrawal of ₹${withdrawal.amount} has been processed and sent to your ${withdrawal.paymentMethod === 'bank_transfer' ? 'bank account' : withdrawal.paymentMethod === 'upi' ? 'UPI ID' : 'Paytm account'}.${transactionId ? ` Transaction ID: ${transactionId}` : ''}`,
+        fromUserId: adminId,
+        data: {
+          withdrawalId: withdrawal._id.toString(),
+          withdrawalAmount: withdrawal.amount,
+          transactionId: transactionId || null
+        }
+      });
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Withdrawal marked as completed successfully',
+      withdrawal
+    });
+
+  } catch (error) {
+    console.error('Complete withdrawal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while completing withdrawal',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 export default {
   adminLogin,
   createAdmin,
@@ -2366,9 +3095,16 @@ export default {
   updateQuiz,
   deleteQuiz,
   getAllVideos,
+  createVideo,
+  updateVideo,
+  deleteVideo,
   getQuizAttempts,
   getQuizRankings,
   toggleTeacherPaidQuizPermission,
-  getTeachersPaidQuizStatus
+  getTeachersPaidQuizStatus,
+  getAllWithdrawals,
+  approveWithdrawal,
+  rejectWithdrawal,
+  completeWithdrawal
 };
 

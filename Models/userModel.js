@@ -34,6 +34,23 @@ const userSchema = new mongoose.Schema(
       rejectionReason: { type: String, default: null }
     },
 
+    // Student Verification Fields (KYC)
+    studentVerification: {
+      status: {
+        type: String,
+        enum: ['not_submitted', 'pending', 'approved', 'rejected'],
+        default: 'not_submitted'
+      },
+      aadharFront: { type: String, default: null }, // Aadhar card front image
+      aadharBack: { type: String, default: null }, // Aadhar card back image
+      studentId: { type: String, default: null }, // Student ID card image
+      marksheet: { type: String, default: null }, // Marksheet/qualification proof
+      submittedAt: { type: Date, default: null },
+      reviewedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      rejectionReason: { type: String, default: null }
+    },
+
     // Soft Delete Fields
     isActive: { type: Boolean, default: true }, // Account status
     deletionRequested: { type: Boolean, default: false }, // Has user requested deletion

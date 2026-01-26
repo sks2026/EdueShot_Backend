@@ -74,6 +74,14 @@ const verificationDocsUpload = upload.fields([
   { name: 'marksheet', maxCount: 1 }
 ]);
 
+// Student verification documents upload
+const studentVerificationDocsUpload = upload.fields([
+  { name: 'aadharFront', maxCount: 1 },
+  { name: 'aadharBack', maxCount: 1 },
+  { name: 'studentId', maxCount: 1 },
+  { name: 'marksheet', maxCount: 1 }
+]);
+
 // Error handling middleware for multer
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
@@ -96,4 +104,4 @@ const handleUploadError = (err, req, res, next) => {
   next();
 };
 
-export { videoUpload, imageUpload, courseUpload, profilePicUpload, verificationDocsUpload, handleUploadError };
+export { videoUpload, imageUpload, courseUpload, profilePicUpload, verificationDocsUpload, studentVerificationDocsUpload, handleUploadError, upload };

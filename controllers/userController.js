@@ -352,6 +352,17 @@ const login = async (req, res) => {
       });
     }
 
+    // SECURITY: Block admin login from app - Admin can only login through admin panel
+    if (role === 'admin') {
+      console.log('🚫 Admin login attempt blocked from app endpoint:', email);
+      return res.status(403).json({
+        success: false,
+        message: 'Admin login is not allowed through this endpoint. Please use the admin panel to login.',
+        adminLoginRequired: true,
+        adminPanelUrl: '/admin/login'
+      });
+    }
+
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
@@ -1266,6 +1277,16 @@ const refreshToken = async (req, res) => {
       });
     }
 
+    // SECURITY: Block admin refresh token from app - Admin should use admin panel
+    if (user.role === 'admin') {
+      console.log('🚫 Admin refresh token attempt blocked from app endpoint:', user.email);
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access is not allowed through this endpoint. Please use the admin panel.',
+        adminLoginRequired: true
+      });
+    }
+
     // Generate new access token (7 days for mobile app)
     const accessToken = jwt.sign(
       { userId: user._id, email: user.email, role: user.role, type: 'access' },
@@ -1327,7 +1348,7 @@ const uploadProfilePic = async (req, res) => {
     }
 
     // Get BASE_URL from environment
-    const BASE_URL = process.env.BASE_URL || 'http://172.20.10.4:3002';
+    const BASE_URL = process.env.BASE_URL || 'http://192.168.31.186:3002';
     const profilePicUrl = `${BASE_URL}/uploads/${req.file.filename}`;
 
     // Update user profile pic

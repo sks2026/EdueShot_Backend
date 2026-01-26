@@ -4,8 +4,12 @@ const supportContentSchema = new mongoose.Schema({
   type: {
     type: String,
     enum: ['help_center', 'terms_of_service', 'privacy_policy', 'faq', 'about_us'],
-    required: true,
-    unique: true
+    required: true
+  },
+  targetRole: {
+    type: String,
+    enum: ['all', 'teacher', 'student'],
+    default: 'all'
   },
   title: {
     type: String,
@@ -44,6 +48,9 @@ const supportContentSchema = new mongoose.Schema({
     ref: 'User'
   }
 }, { timestamps: true });
+
+// Compound unique index: same type + same targetRole must be unique
+supportContentSchema.index({ type: 1, targetRole: 1 }, { unique: true });
 
 const SupportContent = mongoose.model('SupportContent', supportContentSchema);
 

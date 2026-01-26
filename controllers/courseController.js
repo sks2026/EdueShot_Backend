@@ -6,7 +6,7 @@ import fs from 'fs';
 
 // Get base URL configuration - use production server IP
 const getBaseUrl = () => {
-  const defaultUrl = 'http://172.20.10.4:3002';
+  const defaultUrl = 'http://192.168.31.186:3002';
   const baseUrl = process.env.BASE_URL || defaultUrl;
 
   // Ensure BASE_URL has proper protocol
@@ -33,8 +33,8 @@ const ensureFullUrl = (url) => {
   // Already full URL - fix localhost references
   if (url.startsWith('http')) {
     // Replace localhost with actual server IP
-    let fixedUrl = url.replace(/localhost/gi, '172.20.10.4');
-    fixedUrl = fixedUrl.replace(/127\.0\.0\.1/gi, '172.20.10.4');
+    let fixedUrl = url.replace(/localhost/gi, '192.168.31.186');
+    fixedUrl = fixedUrl.replace(/127\.0\.0\.1/gi, '192.168.31.186');
     console.log('✅ Already full URL (fixed):', fixedUrl);
     return fixedUrl;
   }
@@ -70,6 +70,23 @@ export const createCourse = async (req, res) => {
           userRole: userRole,
           userId: userId
         }
+      });
+    }
+
+    // Check if teacher is verified
+    const teacher = await User.findById(userId).select('teacherVerification');
+    if (!teacher) {
+      return res.status(404).json({
+        success: false,
+        message: "Teacher not found"
+      });
+    }
+
+    if (teacher.teacherVerification?.status !== 'approved') {
+      return res.status(403).json({
+        success: false,
+        message: "You must be a verified teacher to create courses. Please complete your KYC verification first.",
+        verificationStatus: teacher.teacherVerification?.status || 'not_submitted'
       });
     }
 

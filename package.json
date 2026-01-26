@@ -22,8 +22,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.0",
     "multer": "^2.0.2",
-    "nodemailer": "^6.9.7",
-    "razorpay": "^2.9.6"
+    "nodemailer": "^6.9.7"
   },
   "keywords": [
     "education",
