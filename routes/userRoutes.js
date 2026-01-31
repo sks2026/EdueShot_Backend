@@ -1,7 +1,7 @@
 import express from 'express';
 import userController from '../controllers/userController.js';
 import authenticateToken from '../Middleware/userAuth.js';
-import { profilePicUpload, handleUploadError } from '../Middleware/upload.js';
+import { profilePicUpload, handleUploadError } from '../Middleware/s3Upload.js';
 import {
   loginLimiter,
   otpLimiter,
@@ -35,7 +35,7 @@ router.get('/get/:id', authenticateToken, userController.getProfile);
 router.put('/update/:id', authenticateToken, userController.updateUserProfile);
 router.get('/profile', authenticateToken, userController.getMyProfile);
 router.put('/profile', authenticateToken, userController.updateProfile);
-router.post('/upload-profile-pic', authenticateToken, profilePicUpload, handleUploadError, userController.uploadProfilePic);
+router.post('/upload-profile-pic', authenticateToken, ...profilePicUpload, handleUploadError, userController.uploadProfilePic);
 router.delete('/delete/:id', authenticateToken, userController.deleteUserProfile);
 router.get('/all', authenticateToken, userController.getAllUsers);
 

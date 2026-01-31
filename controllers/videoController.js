@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import ffprobe from 'ffprobe-static';
+import { getS3PublicUrl, extractFileName, isS3Enabled, getUploadPrefix, getSignedVideoUrl, getSignedThumbnailUrl } from '../services/s3Service.js';
 
 // Set ffprobe path
 ffmpeg.setFfprobePath(ffprobe.path);
@@ -25,7 +26,15 @@ const getVideoDuration = (videoPath) => {
 
 // Helper function to generate full URL for uploaded files
 const generateFileUrl = (filename) => {
-  // Default to production server URL
+  // If S3 is enabled, use S3 URL
+  if (isS3Enabled()) {
+    const s3Url = getS3PublicUrl(filename);
+    if (s3Url) {
+      return s3Url;
+    }
+  }
+  
+  // Fallback to local server URL
   const defaultUrl = 'http://192.168.31.186:3002';
   let baseUrl = process.env.BASE_URL || defaultUrl;
   
@@ -41,6 +50,7 @@ const generateFileUrl = (filename) => {
 // Convert stored/received media URL/path to ONLY filename.
 // Examples:
 // - "http://host:3002/uploads/a.jpg" -> "a.jpg"
+// - "https://bucket.s3.region.amazonaws.com/a.jpg" -> "a.jpg"
 // - "/uploads/a.jpg" -> "a.jpg"
 // - "uploads/a.jpg" -> "a.jpg"
 // - "a.jpg" -> "a.jpg"
@@ -49,11 +59,19 @@ const toFilenameOnly = (value) => {
   let v = String(value).trim();
   if (!v) return null;
 
+  // If S3 is enabled, try to extract filename from S3 URL
+  if (isS3Enabled()) {
+    const extracted = extractFileName(v);
+    if (extracted) {
+      return extracted;
+    }
+  }
+
   // If it's a full URL, parse and take pathname
   try {
     if (v.startsWith('http://') || v.startsWith('https://')) {
       const u = new URL(v);
-      v = u.pathname; // "/uploads/a.jpg"
+      v = u.pathname; // "/uploads/a.jpg" or "/filename.jpg"
     }
   } catch {
     // ignore parse errors
@@ -69,27 +87,32 @@ const toFilenameOnly = (value) => {
 
 // Helper function to ensure URL is full (for backward compatibility)
 const ensureFullUrl = (url) => {
-  if (!url) return null;
-  
-  // Default base URL
-  const defaultUrl = 'http://192.168.31.186:3002';
-  
-  // Check if already full URL with proper protocol
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    // Fix localhost references
-    let fixedUrl = url.replace(/localhost/gi, '192.168.31.186');
-    fixedUrl = fixedUrl.replace(/127\.0\.0\.1/gi, '192.168.31.186');
-    return fixedUrl;
+  try {
+    if (!url) return null;
+    
+    // Default base URL
+    const defaultUrl = 'http://192.168.31.186:3002';
+    
+    // Check if already full URL with proper protocol
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      // Fix localhost references
+      let fixedUrl = url.replace(/localhost/gi, '192.168.31.186');
+      fixedUrl = fixedUrl.replace(/127\.0\.0\.1/gi, '192.168.31.186');
+      return fixedUrl;
+    }
+    
+    // Handle /uploads/ prefix
+    if (url.startsWith('/uploads/')) {
+      const filename = url.replace('/uploads/', '');
+      return generateFileUrl(filename);
+    }
+    
+    // Handle relative paths or just filenames
+    return generateFileUrl(url);
+  } catch (error) {
+    console.warn('⚠️ Error in ensureFullUrl:', error.message, 'for URL:', url);
+    return null;
   }
-  
-  // Handle /uploads/ prefix
-  if (url.startsWith('/uploads/')) {
-    const filename = url.replace('/uploads/', '');
-    return generateFileUrl(filename);
-  }
-  
-  // Handle relative paths or just filenames
-  return generateFileUrl(url);
 };
 
 const uploadVideo = async (req, res) => {
@@ -123,15 +146,22 @@ const uploadVideo = async (req, res) => {
 
     console.log('📋 Video data:', { title, description, category, customCategory });
 
-    // Get video duration and use contentType from request body
-    const videoPath = path.join(process.cwd(), 'uploads', videoFile.filename);
+    // Get video duration - handle both S3 and local files
     let videoDuration = null;
     
-    try {
-      videoDuration = await getVideoDuration(videoPath);
-      console.log(`📏 Video duration: ${videoDuration}s`);
-    } catch (durationError) {
-      console.warn('⚠️ Could not determine video duration:', durationError.message);
+    if (isS3Enabled() && videoFile.s3Url) {
+      // For S3 files, we can't easily get duration without downloading
+      // Duration can be extracted on frontend or set to null
+      console.log('ℹ️ S3 file detected, skipping duration extraction (can be done on frontend)');
+    } else {
+      // For local files, extract duration
+      try {
+        const videoPath = path.join(process.cwd(), 'uploads', videoFile.filename);
+        videoDuration = await getVideoDuration(videoPath);
+        console.log(`📏 Video duration: ${videoDuration}s`);
+      } catch (durationError) {
+        console.warn('⚠️ Could not determine video duration:', durationError.message);
+      }
     }
 
     // Use contentType from request body, default to 'full' if not provided
@@ -139,15 +169,73 @@ const uploadVideo = async (req, res) => {
     const contentType = requestContentType && ['full', 'reel'].includes(requestContentType) ? requestContentType : 'full';
     console.log(`📹 Content type from request: ${requestContentType}, Using: ${contentType}`);
 
+    // Get file identifiers - always use full S3 key with prefix when S3 is enabled
+    // Middleware sets file.filename or file.s3Key to the full S3 key (e.g., "uploads/filename.mp4")
+    let videoKey, thumbnailKey;
+    
+    if (isS3Enabled()) {
+      // For S3: Middleware already sets file.filename or file.s3Key with full prefix
+      // Priority: s3Key > filename > extract from s3Url and add prefix
+      const uploadPrefix = getUploadPrefix();
+      
+      // Video key
+      if (videoFile.s3Key) {
+        videoKey = videoFile.s3Key; // Full S3 key with prefix
+      } else if (videoFile.filename) {
+        // Middleware should have set this to full key, but ensure prefix exists
+        videoKey = videoFile.filename.startsWith(uploadPrefix) 
+          ? videoFile.filename 
+          : uploadPrefix + videoFile.filename;
+      } else {
+        // Fallback: extract from URL and ensure prefix
+        const extracted = videoFile.s3Url ? extractFileName(videoFile.s3Url) : null;
+        if (extracted) {
+          videoKey = extracted.startsWith(uploadPrefix) ? extracted : uploadPrefix + extracted;
+        } else {
+          // Last resort: generate filename and add prefix
+          const filename = `${Date.now()}-${videoFile.originalname.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+          videoKey = uploadPrefix + filename;
+        }
+      }
+      
+      // Thumbnail key
+      if (thumbFile) {
+        if (thumbFile.s3Key) {
+          thumbnailKey = thumbFile.s3Key; // Full S3 key with prefix
+        } else if (thumbFile.filename) {
+          thumbnailKey = thumbFile.filename.startsWith(uploadPrefix)
+            ? thumbFile.filename
+            : uploadPrefix + thumbFile.filename;
+        } else {
+          const extracted = thumbFile.s3Url ? extractFileName(thumbFile.s3Url) : null;
+          if (extracted) {
+            thumbnailKey = extracted.startsWith(uploadPrefix) ? extracted : uploadPrefix + extracted;
+          } else {
+            const filename = `${Date.now()}-${thumbFile.originalname.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+            thumbnailKey = uploadPrefix + filename;
+          }
+        }
+      } else {
+        thumbnailKey = null;
+      }
+    } else {
+      // For local storage: use filename as-is (no prefix needed)
+      videoKey = videoFile.filename;
+      thumbnailKey = thumbFile?.filename || null;
+    }
+    
+    console.log('🔑 Video S3 Key (stored in DB):', videoKey);
+    console.log('🔑 Thumbnail S3 Key (stored in DB):', thumbnailKey);
+
     const newVideo = new Video({
       title,
       description,
       contentType, // Use contentType from request body
       category: category ? category.split(',') : [], // if array comes as CSV
       customCategory,
-      videoUrl: videoFile.filename,
-      // Store ONLY filename; frontend will build full URL
-      thumbnailUrl: thumbFile ? thumbFile.filename : null,
+      videoUrl: videoKey, // Store S3 key or filename
+      // Store ONLY key/filename; frontend will build full URL
+      thumbnailUrl: thumbnailKey,
       uploadedBy: req.user.userId // from authenticate middleware (JWT contains userId, not _id)
     });
 
@@ -158,10 +246,10 @@ const uploadVideo = async (req, res) => {
     // Ensure thumbnailUrl is included in response
     const videoResponse = {
       ...newVideo.toObject(),
-      // Return ONLY filenames; frontend will build full URL
-      videoUrl: videoFile.filename,
-      thumbnailUrl: thumbFile ? thumbFile.filename : null,
-      thumbnail: thumbFile ? thumbFile.filename : null // Frontend compatibility
+      // Return ONLY filenames/keys; frontend will build full URL
+      videoUrl: videoKey,
+      thumbnailUrl: thumbnailKey,
+      thumbnail: thumbnailKey // Frontend compatibility
     };
 
     console.log('📹 Video upload response:', {
@@ -199,10 +287,40 @@ const getAllVideos = async (req, res) => {
     
     console.log(`📹 getAllVideos: Found ${videos.length} videos`);
     
-    // Return ONLY filenames; frontend will build full URL
-    const videosWithFilenames = videos.map(video => {
+    // Return videos with signed URLs if S3 is enabled
+    const videosWithFilenames = await Promise.all(videos.map(async (video) => {
       const videoObj = video.toObject();
-      const thumbnailUrl = toFilenameOnly(videoObj.thumbnailUrl);
+      
+      // Get S3 keys (with prefix if S3 enabled)
+      const videoKey = videoObj.videoUrl; // Already has prefix if S3 enabled
+      const thumbnailKey = videoObj.thumbnailUrl || null;
+
+      // Generate signed URLs if S3 is enabled
+      // Videos delete hone tak accessible rahengi (7 days expiry, frontend auto-refresh karega)
+      let videoSignedUrl = null;
+      let videoSignedUrlExpiresAt = null;
+      let thumbnailSignedUrl = null;
+      let thumbnailSignedUrlExpiresAt = null;
+
+      if (isS3Enabled() && videoKey) {
+        try {
+          const signedUrlData = await getSignedVideoUrl(videoKey);
+          videoSignedUrl = signedUrlData.url; // Extract URL from response object
+          videoSignedUrlExpiresAt = signedUrlData.expiresAt; // Expiry timestamp for frontend
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for video ${videoKey}:`, error.message);
+        }
+      }
+
+      if (isS3Enabled() && thumbnailKey) {
+        try {
+          const signedUrlData = await getSignedThumbnailUrl(thumbnailKey);
+          thumbnailSignedUrl = signedUrlData.url; // Extract URL from response object
+          thumbnailSignedUrlExpiresAt = signedUrlData.expiresAt; // Expiry timestamp for frontend
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for thumbnail ${thumbnailKey}:`, error.message);
+        }
+      }
       
       // Log thumbnail processing for debugging
       if (!videoObj.thumbnailUrl) {
@@ -214,11 +332,21 @@ const getAllVideos = async (req, res) => {
       
       return {
         ...videoObj,
-        videoUrl: toFilenameOnly(videoObj.videoUrl),
-        thumbnailUrl: thumbnailUrl,
-        thumbnail: thumbnailUrl // Frontend compatibility
+        // Keys (for reference)
+        videoKey: videoKey,
+        thumbnailKey: thumbnailKey,
+        // Signed URLs (for accessing private S3 objects)
+        // Videos delete hone tak accessible rahengi (7 days expiry, frontend auto-refresh karega)
+        videoSignedUrl: videoSignedUrl,
+        videoSignedUrlExpiresAt: videoSignedUrlExpiresAt, // Frontend ko pata hoga kab refresh karna hai
+        thumbnailSignedUrl: thumbnailSignedUrl,
+        thumbnailSignedUrlExpiresAt: thumbnailSignedUrlExpiresAt, // Frontend ko pata hoga kab refresh karna hai
+        // Main fields - use signed URLs if available, otherwise use keys (for local storage)
+        videoUrl: videoSignedUrl || videoKey, // Use signed URL if available, otherwise key
+        thumbnailUrl: thumbnailSignedUrl || thumbnailKey, // Use signed URL if available, otherwise key
+        thumbnail: thumbnailSignedUrl || thumbnailKey // Use signed URL if available, otherwise key
       };
-    });
+    }));
     
     console.log(`📹 getAllVideos: Returning ${videosWithFilenames.length} videos with thumbnails`);
     
@@ -239,8 +367,38 @@ const getVideoById = async (req, res) => {
     
     const videoObj = video.toObject();
     
-    // Return ONLY filenames; frontend will build full URL
-    const thumbnailUrl = toFilenameOnly(videoObj.thumbnailUrl);
+    // Get S3 keys (with prefix if S3 enabled)
+    const videoKey = videoObj.videoUrl; // Already has prefix if S3 enabled
+    const thumbnailKey = videoObj.thumbnailUrl || null;
+
+    // Generate signed URLs if S3 is enabled
+    // Videos delete hone tak accessible rahengi (7 days expiry, frontend auto-refresh karega)
+    let videoSignedUrl = null;
+    let videoSignedUrlExpiresAt = null;
+    let thumbnailSignedUrl = null;
+    let thumbnailSignedUrlExpiresAt = null;
+
+    if (isS3Enabled() && videoKey) {
+      try {
+        const signedUrlData = await getSignedVideoUrl(videoKey);
+        videoSignedUrl = signedUrlData.url; // Extract URL from response object
+        videoSignedUrlExpiresAt = signedUrlData.expiresAt; // Expiry timestamp for frontend
+        console.log('✅ Generated signed URL for video in getVideoById:', videoKey.substring(0, 50));
+      } catch (error) {
+        console.error(`❌ Failed to generate signed URL for video ${videoKey}:`, error.message);
+      }
+    }
+
+    if (isS3Enabled() && thumbnailKey) {
+      try {
+        const signedUrlData = await getSignedThumbnailUrl(thumbnailKey);
+        thumbnailSignedUrl = signedUrlData.url; // Extract URL from response object
+        thumbnailSignedUrlExpiresAt = signedUrlData.expiresAt; // Expiry timestamp for frontend
+        console.log('✅ Generated signed URL for thumbnail in getVideoById:', thumbnailKey.substring(0, 50));
+      } catch (error) {
+        console.error(`❌ Failed to generate signed URL for thumbnail ${thumbnailKey}:`, error.message);
+      }
+    }
     
     // Log thumbnail processing for debugging
     if (!videoObj.thumbnailUrl) {
@@ -252,14 +410,29 @@ const getVideoById = async (req, res) => {
     
     const videoWithFullUrls = {
       ...videoObj,
-      videoUrl: toFilenameOnly(videoObj.videoUrl),
-      thumbnailUrl: thumbnailUrl,
-      thumbnail: thumbnailUrl // Also provide as 'thumbnail' for frontend compatibility
+      // Keys (for reference)
+      videoKey: videoKey,
+      thumbnailKey: thumbnailKey,
+      // Signed URLs (for accessing private S3 objects)
+      // Videos delete hone tak accessible rahengi (7 days expiry, frontend auto-refresh karega)
+      videoSignedUrl: videoSignedUrl,
+      videoSignedUrlExpiresAt: videoSignedUrlExpiresAt, // Frontend ko pata hoga kab refresh karna hai
+      thumbnailSignedUrl: thumbnailSignedUrl,
+      thumbnailSignedUrlExpiresAt: thumbnailSignedUrlExpiresAt, // Frontend ko pata hoga kab refresh karna hai
+      // Main fields - use signed URLs if available, otherwise use keys (for local storage)
+      videoUrl: videoSignedUrl || videoKey, // Use signed URL if available, otherwise key
+      thumbnailUrl: thumbnailSignedUrl || thumbnailKey, // Use signed URL if available, otherwise key
+      thumbnail: thumbnailSignedUrl || thumbnailKey // Use signed URL if available, otherwise key
     };
     
     console.log('📹 Video by ID response:', {
       id: videoObj._id,
       title: videoObj.title,
+      videoKey: videoKey,
+      hasVideoSignedUrl: !!videoSignedUrl,
+      videoUrl: videoWithFullUrls.videoUrl,
+      thumbnailKey: thumbnailKey,
+      hasThumbnailSignedUrl: !!thumbnailSignedUrl,
       thumbnailUrl: videoWithFullUrls.thumbnailUrl,
       thumbnail: videoWithFullUrls.thumbnail
     });
@@ -465,12 +638,17 @@ const streamAllVideos = async (req, res) => {
       query.contentType = contentType;
     }
 
+    console.log('🔍 Query for videos:', JSON.stringify(query, null, 2));
+    console.log('📊 Request params:', { contentType, limit, page });
+
     // Calculate pagination
     const skip = (page - 1) * limit;
 
     // Get total count for pagination
     const totalVideos = await Video.countDocuments(query);
     const totalPages = Math.ceil(totalVideos / limit);
+    
+    console.log(`📹 Found ${totalVideos} videos matching query (Page ${page}/${totalPages})`);
 
     // Get videos from database
     const videos = await Video.find(query)
@@ -500,28 +678,39 @@ const streamAllVideos = async (req, res) => {
       });
     }
 
-    // Transform videos for streaming format (filenames only)
-    const streamableVideos = videos.map(video => {
+    // Transform videos for streaming format with signed URLs
+    const streamableVideos = await Promise.all(videos.map(async (video) => {
       const videoObj = video.toObject();
 
-      const filename = toFilenameOnly(videoObj.videoUrl);
+      // Get S3 keys (with prefix if S3 enabled)
+      const videoKey = videoObj.videoUrl; // Already has prefix if S3 enabled
+      const thumbnailKey = videoObj.thumbnailUrl || null;
 
-      const thumbnailUrl = toFilenameOnly(videoObj.thumbnailUrl);
-      
-      // Log thumbnail processing for debugging
-      if (!videoObj.thumbnailUrl) {
-        console.warn('⚠️ Video missing thumbnail:', {
-          id: videoObj._id,
-          title: videoObj.title
-        });
-      } else {
-        console.log('📹 Processing video for stream:', {
-          id: videoObj._id,
-          title: videoObj.title,
-          originalThumbnailUrl: videoObj.thumbnailUrl,
-          processedThumbnail: thumbnailUrl,
-          hasThumbnail: !!videoObj.thumbnailUrl
-        });
+      // Generate signed URLs if S3 is enabled
+      // Videos delete hone tak accessible rahengi (7 days expiry, frontend auto-refresh karega)
+      let videoSignedUrl = null;
+      let videoSignedUrlExpiresAt = null;
+      let thumbnailSignedUrl = null;
+      let thumbnailSignedUrlExpiresAt = null;
+
+      if (isS3Enabled() && videoKey) {
+        try {
+          const signedUrlData = await getSignedVideoUrl(videoKey);
+          videoSignedUrl = signedUrlData.url; // Extract URL from response object
+          videoSignedUrlExpiresAt = signedUrlData.expiresAt; // Expiry timestamp for frontend
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for video ${videoKey}:`, error.message);
+        }
+      }
+
+      if (isS3Enabled() && thumbnailKey) {
+        try {
+          const signedUrlData = await getSignedThumbnailUrl(thumbnailKey);
+          thumbnailSignedUrl = signedUrlData.url; // Extract URL from response object
+          thumbnailSignedUrlExpiresAt = signedUrlData.expiresAt; // Expiry timestamp for frontend
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for thumbnail ${thumbnailKey}:`, error.message);
+        }
       }
 
       return {
@@ -530,15 +719,25 @@ const streamAllVideos = async (req, res) => {
         description: videoObj.description,
         contentType: videoObj.contentType,
         category: videoObj.category,
-        thumbnail: thumbnailUrl,
-        thumbnailUrl: thumbnailUrl,
-        videoUrl: filename,
-        filename: filename, // For direct streaming
+        // Keys (for reference)
+        videoKey: videoKey,
+        thumbnailKey: thumbnailKey,
+        // Signed URLs (for accessing private S3 objects)
+        // Videos delete hone tak accessible rahengi (7 days expiry, frontend auto-refresh karega)
+        videoSignedUrl: videoSignedUrl,
+        videoSignedUrlExpiresAt: videoSignedUrlExpiresAt, // Frontend ko pata hoga kab refresh karna hai
+        thumbnailSignedUrl: thumbnailSignedUrl,
+        thumbnailSignedUrlExpiresAt: thumbnailSignedUrlExpiresAt, // Frontend ko pata hoga kab refresh karna hai
+        // Legacy fields (for backward compatibility)
+        thumbnail: thumbnailKey,
+        thumbnailUrl: thumbnailKey,
+        videoUrl: videoKey,
+        filename: videoKey,
         creator: {
-          id: videoObj.uploadedBy._id,
-          name: videoObj.uploadedBy.name,
-          email: videoObj.uploadedBy.email,
-          profilePic: ensureFullUrl(videoObj.uploadedBy.profilePic)
+          id: videoObj.uploadedBy?._id || null,
+          name: videoObj.uploadedBy?.name || 'Unknown',
+          email: videoObj.uploadedBy?.email || '',
+          profilePic: videoObj.uploadedBy?.profilePic ? ensureFullUrl(videoObj.uploadedBy.profilePic) : null
         },
         stats: {
           likes: videoObj.likes || 0,
@@ -548,7 +747,7 @@ const streamAllVideos = async (req, res) => {
         likedBy: videoObj.likedBy || [],
         createdAt: videoObj.createdAt
       };
-    });
+    }));
 
     console.log(`📱 Streaming ${streamableVideos.length} videos (Page ${page}/${totalPages})`);
 
@@ -573,10 +772,12 @@ const streamAllVideos = async (req, res) => {
 
   } catch (err) {
     console.error('📱 Stream all videos error:', err);
+    console.error('📱 Error stack:', err.stack);
     res.status(500).json({
       success: false,
       error: 'Failed to stream videos',
-      details: err.message
+      message: err.message || 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 };

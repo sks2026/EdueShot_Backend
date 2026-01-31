@@ -9,12 +9,12 @@ import {
   deleteCourse,
 } from "../controllers/courseController.js";
 import authenticateToken, { optionalAuthenticateToken } from "../Middleware/userAuth.js";
-import { imageUpload } from "../Middleware/upload.js";
+import { imageUpload, handleUploadError } from "../Middleware/s3Upload.js";
 
 const router = express.Router();
 
 // teacher creates (with file upload)
-router.post("/create", authenticateToken, imageUpload, createCourse);
+router.post("/create", authenticateToken, imageUpload, handleUploadError, createCourse);
 
 // anyone can view all courses (optional auth to check enrollment status)
 router.get("/", optionalAuthenticateToken, getCourses);

@@ -1,6 +1,6 @@
 import express from 'express';
 import authenticateToken from '../Middleware/userAuth.js';
-import { verificationDocsUpload, studentVerificationDocsUpload, handleUploadError } from '../Middleware/upload.js';
+import { verificationDocsUpload, studentVerificationDocsUpload, handleUploadError } from '../Middleware/s3Upload.js';
 import {
   submitVerificationDocuments,
   getVerificationStatus,

@@ -3,6 +3,7 @@ import User from "../Models/userModel.js";
 import { createNotification } from './notificationController.js';
 import path from 'path';
 import fs from 'fs';
+import { isS3Enabled, getSignedThumbnailUrl, getUploadPrefix } from '../services/s3Service.js';
 
 // Get base URL configuration - use production server IP
 const getBaseUrl = () => {
@@ -79,7 +80,21 @@ export const createCourse = async (req, res) => {
     const { title, description, price, details } = req.body;
     
     // Get thumbnail from uploaded file or fallback to body (for backward compatibility)
-    const thumbnail = req.file ? req.file.filename : req.body.thumbnail;
+    // Check both req.file (single upload) and req.files.thumbnail (fields upload)
+    let thumbnail = null;
+    if (req.file && req.file.filename) {
+      // Single file upload (imageUpload middleware)
+      thumbnail = req.file.filename; // Already has prefix if S3 enabled
+      console.log('📁 Thumbnail from req.file:', thumbnail);
+    } else if (req.files && req.files.thumbnail && req.files.thumbnail[0]) {
+      // Fields upload (courseUpload middleware)
+      thumbnail = req.files.thumbnail[0].filename; // Already has prefix if S3 enabled
+      console.log('📁 Thumbnail from req.files.thumbnail:', thumbnail);
+    } else if (req.body.thumbnail) {
+      // Fallback to body (for backward compatibility)
+      thumbnail = req.body.thumbnail;
+      console.log('📁 Thumbnail from req.body:', thumbnail);
+    }
 
     if (!title || !description || !thumbnail) {
       return res.status(400).json({
@@ -193,14 +208,67 @@ export const getCourses = async (req, res) => {
       .populate("students", "name email")
       .sort({ createdAt: -1 }); // Sort by newest first
 
-    // Return only filenames for thumbnails (frontend will build full URL)
-    const coursesWithFilenames = courses.map(course => {
+    // Return courses with signed URLs if S3 is enabled
+    const coursesWithFilenames = await Promise.all(courses.map(async (course) => {
       const courseObj = course.toObject();
 
-      // Check if thumbnail file exists
+      // Get thumbnail key (with prefix if S3 enabled)
+      let thumbnailKey = courseObj.thumbnail; // Might have prefix, might not, might be null
+      
+      console.log(`📷 Course "${courseObj.title}" - Original thumbnail value:`, thumbnailKey);
+      
+      // If thumbnail is null or empty, skip S3 processing
+      if (!thumbnailKey || thumbnailKey.trim() === '') {
+        console.warn(`⚠️ Course "${courseObj.title}" has no thumbnail`);
+        return {
+          ...courseObj,
+          thumbnailKey: null,
+          thumbnailSignedUrl: null,
+          thumbnailSignedUrlExpiresAt: null,
+          thumbnail: null,
+          thumbnailExists: false,
+          studentsCount: courseObj.students?.length || 0,
+          isAdminCreated: !courseObj.teacher,
+          teacher: courseObj.teacher || null,
+          isPurchased: false,
+          instructor: courseObj.teacher?.name || 'Unknown Instructor',
+          instructorImage: null,
+          instructorImageSignedUrl: null,
+          instructorImageSignedUrlExpiresAt: null
+        };
+      }
+      
+      // Ensure thumbnail key has the upload prefix if S3 is enabled
+      if (isS3Enabled() && thumbnailKey) {
+        const uploadPrefix = getUploadPrefix();
+        // If thumbnail doesn't start with prefix, add it
+        if (!thumbnailKey.startsWith(uploadPrefix)) {
+          thumbnailKey = uploadPrefix + thumbnailKey;
+          console.log('🔧 Added prefix to course thumbnail key:', thumbnailKey.substring(0, 50));
+        }
+      }
+      
+      // Generate signed URLs if S3 is enabled
+      let thumbnailSignedUrl = null;
+      let thumbnailSignedUrlExpiresAt = null;
+
+      if (isS3Enabled() && thumbnailKey) {
+        try {
+          const signedUrlData = await getSignedThumbnailUrl(thumbnailKey);
+          thumbnailSignedUrl = signedUrlData.url;
+          thumbnailSignedUrlExpiresAt = signedUrlData.expiresAt;
+          console.log('✅ Generated signed URL for course thumbnail:', thumbnailKey.substring(0, 50));
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for course thumbnail ${thumbnailKey}:`, error.message);
+          console.error('❌ Error stack:', error.stack);
+          // Don't fail the entire request, just log the error
+        }
+      }
+
+      // Check if thumbnail file exists (for local storage)
       let thumbnailExists = false;
       const thumbnailFilename = toFilenameOnly(courseObj.thumbnail);
-      if (thumbnailFilename) {
+      if (thumbnailFilename && !isS3Enabled()) {
         const thumbPath = path.join(process.cwd(), 'uploads', thumbnailFilename);
         thumbnailExists = fs.existsSync(thumbPath);
         console.log(`📷 Course "${courseObj.title}" thumbnail: ${thumbnailFilename}, exists: ${thumbnailExists}`);
@@ -219,9 +287,35 @@ export const getCourses = async (req, res) => {
         ) || false;
       }
 
+      // Get instructor image key and signed URL
+      const instructorImageKey = courseObj.teacher?.profilePic ? toFilenameOnly(courseObj.teacher.profilePic) : null;
+      let instructorImageSignedUrl = null;
+      let instructorImageSignedUrlExpiresAt = null;
+
+      if (isS3Enabled() && instructorImageKey) {
+        try {
+          // Check if it's already a key with prefix
+          const uploadPrefix = getUploadPrefix();
+          const fullInstructorImageKey = instructorImageKey.startsWith(uploadPrefix) 
+            ? instructorImageKey 
+            : uploadPrefix + instructorImageKey;
+          const signedUrlData = await getSignedThumbnailUrl(fullInstructorImageKey);
+          instructorImageSignedUrl = signedUrlData.url;
+          instructorImageSignedUrlExpiresAt = signedUrlData.expiresAt;
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for instructor image:`, error.message);
+        }
+      }
+
       return {
         ...courseObj,
-        thumbnail: thumbnailFilename, // Return only filename
+        // Keys (for reference)
+        thumbnailKey: thumbnailKey,
+        // Signed URLs (for accessing private S3 objects)
+        thumbnailSignedUrl: thumbnailSignedUrl,
+        thumbnailSignedUrlExpiresAt: thumbnailSignedUrlExpiresAt,
+        // Main fields - use signed URLs if available, otherwise keys/filenames
+        thumbnail: thumbnailSignedUrl || thumbnailKey || thumbnailFilename, // Use signed URL if available
         thumbnailExists: thumbnailExists,
         studentsCount: courseObj.students?.length || 0,
         // Add flag to indicate if course is admin-created (no teacher)
@@ -230,9 +324,11 @@ export const getCourses = async (req, res) => {
         isPurchased: isPurchased, // Enrollment status for students
         // Add instructor info for compatibility
         instructor: courseObj.teacher?.name || 'Unknown Instructor',
-        instructorImage: courseObj.teacher?.profilePic ? toFilenameOnly(courseObj.teacher.profilePic) : null
+        instructorImage: instructorImageSignedUrl || instructorImageKey || null,
+        instructorImageSignedUrl: instructorImageSignedUrl,
+        instructorImageSignedUrlExpiresAt: instructorImageSignedUrlExpiresAt
       };
-    });
+    }));
 
     res.status(200).json({ success: true, courses: coursesWithFilenames });
   } catch (error) {
@@ -265,26 +361,82 @@ export const getCourseById = async (req, res) => {
       });
     }
 
-    // Return only filename for thumbnail (frontend will build full URL)
+    // Get thumbnail key and generate signed URL if S3 is enabled
     const courseObj = course.toObject();
+    let thumbnailKey = courseObj.thumbnail; // Might have prefix, might not
+    
+    // Ensure thumbnail key has the upload prefix if S3 is enabled
+    if (isS3Enabled() && thumbnailKey) {
+      const uploadPrefix = getUploadPrefix();
+      // If thumbnail doesn't start with prefix, add it
+      if (!thumbnailKey.startsWith(uploadPrefix)) {
+        thumbnailKey = uploadPrefix + thumbnailKey;
+        console.log('🔧 Added prefix to course thumbnail key in getCourseById:', thumbnailKey.substring(0, 50));
+      }
+    }
+    
+    // Generate signed URLs if S3 is enabled
+    let thumbnailSignedUrl = null;
+    let thumbnailSignedUrlExpiresAt = null;
 
-    // Check if thumbnail file exists
+    if (isS3Enabled() && thumbnailKey) {
+      try {
+        const signedUrlData = await getSignedThumbnailUrl(thumbnailKey);
+        thumbnailSignedUrl = signedUrlData.url;
+        thumbnailSignedUrlExpiresAt = signedUrlData.expiresAt;
+        console.log('✅ Generated signed URL for course thumbnail in getCourseById:', thumbnailKey.substring(0, 50));
+      } catch (error) {
+        console.error(`❌ Failed to generate signed URL for course thumbnail ${thumbnailKey}:`, error.message);
+        console.error('❌ Error stack:', error.stack);
+      }
+    }
+
+    // Check if thumbnail file exists (for local storage)
     let thumbnailExists = false;
     const thumbnailFilename = toFilenameOnly(courseObj.thumbnail);
-    if (thumbnailFilename) {
+    if (thumbnailFilename && !isS3Enabled()) {
       const thumbPath = path.join(process.cwd(), 'uploads', thumbnailFilename);
       thumbnailExists = fs.existsSync(thumbPath);
       console.log(`📷 Course "${courseObj.title}" thumbnail: ${thumbnailFilename}, exists: ${thumbnailExists}`);
     }
 
+    // Get instructor image key and signed URL
+    const instructorImageKey = courseObj.teacher?.profilePic ? toFilenameOnly(courseObj.teacher.profilePic) : null;
+    let instructorImageSignedUrl = null;
+    let instructorImageSignedUrlExpiresAt = null;
+
+    if (isS3Enabled() && instructorImageKey) {
+      try {
+        const uploadPrefix = getUploadPrefix();
+        const fullInstructorImageKey = instructorImageKey.startsWith(uploadPrefix) 
+          ? instructorImageKey 
+          : uploadPrefix + instructorImageKey;
+        const signedUrlData = await getSignedThumbnailUrl(fullInstructorImageKey);
+        instructorImageSignedUrl = signedUrlData.url;
+        instructorImageSignedUrlExpiresAt = signedUrlData.expiresAt;
+      } catch (error) {
+        console.error(`❌ Failed to generate signed URL for instructor image:`, error.message);
+      }
+    }
+
     const courseWithFilename = {
       ...courseObj,
-      thumbnail: thumbnailFilename, // Return only filename
+      // Keys (for reference)
+      thumbnailKey: thumbnailKey,
+      // Signed URLs (for accessing private S3 objects)
+      thumbnailSignedUrl: thumbnailSignedUrl,
+      thumbnailSignedUrlExpiresAt: thumbnailSignedUrlExpiresAt,
+      // Main fields - use signed URLs if available, otherwise keys/filenames
+      thumbnail: thumbnailSignedUrl || thumbnailKey || thumbnailFilename, // Use signed URL if available
       thumbnailExists: thumbnailExists,
       studentsCount: courseObj.students?.length || 0,
       // Add flag to indicate if course is admin-created (no teacher)
       isAdminCreated: !courseObj.teacher,
-      teacher: courseObj.teacher || null // Explicitly set to null if no teacher
+      teacher: courseObj.teacher || null, // Explicitly set to null if no teacher
+      // Instructor image with signed URL
+      instructorImage: instructorImageSignedUrl || instructorImageKey || null,
+      instructorImageSignedUrl: instructorImageSignedUrl,
+      instructorImageSignedUrlExpiresAt: instructorImageSignedUrlExpiresAt
     };
 
     res.status(200).json({

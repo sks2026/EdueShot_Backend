@@ -4,6 +4,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffprobe from 'ffprobe-static';
 import path from 'path';
 import fs from 'fs';
+import { isS3Enabled, getSignedVideoUrl, getSignedThumbnailUrl, getUploadPrefix } from '../services/s3Service.js';
 
 // Set ffprobe path
 ffmpeg.setFfprobePath(ffprobe.path);
@@ -346,34 +347,83 @@ export const getCoursePlaylist = async (req, res) => {
 
     console.log('📹 Found playlist items:', playlistItems.length);
 
-    // Process all playlist items to ensure URLs are full
-    const processedPlaylistItems = playlistItems.map(item => {
+    // Process all playlist items with signed URLs if S3 is enabled
+    const processedPlaylistItems = await Promise.all(playlistItems.map(async (item) => {
       const processed = processPlaylistItem(item);
+      
+      // Get video and thumbnail keys (with prefix if S3 enabled)
+      let videoKey = processed.videoFile; // Might have prefix if S3 enabled
+      let thumbnailKey = processed.thumbnail; // Might have prefix if S3 enabled
+      
+      // Ensure keys have the upload prefix if S3 is enabled
+      if (isS3Enabled()) {
+        const uploadPrefix = getUploadPrefix();
+        if (videoKey && !videoKey.startsWith(uploadPrefix)) {
+          videoKey = uploadPrefix + videoKey;
+        }
+        if (thumbnailKey && !thumbnailKey.startsWith(uploadPrefix)) {
+          thumbnailKey = uploadPrefix + thumbnailKey;
+        }
+      }
+      
+      // Generate signed URLs if S3 is enabled
+      let videoSignedUrl = null;
+      let videoSignedUrlExpiresAt = null;
+      let thumbnailSignedUrl = null;
+      let thumbnailSignedUrlExpiresAt = null;
 
-      // Check if video file actually exists on disk
-      if (item.videoFile) {
+      if (isS3Enabled() && videoKey) {
+        try {
+          const signedUrlData = await getSignedVideoUrl(videoKey);
+          videoSignedUrl = signedUrlData.url;
+          videoSignedUrlExpiresAt = signedUrlData.expiresAt;
+          console.log('✅ Generated signed URL for playlist video:', videoKey.substring(0, 50));
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for playlist video ${videoKey}:`, error.message);
+        }
+      }
+
+      if (isS3Enabled() && thumbnailKey) {
+        try {
+          const signedUrlData = await getSignedThumbnailUrl(thumbnailKey);
+          thumbnailSignedUrl = signedUrlData.url;
+          thumbnailSignedUrlExpiresAt = signedUrlData.expiresAt;
+          console.log('✅ Generated signed URL for playlist thumbnail:', thumbnailKey.substring(0, 50));
+        } catch (error) {
+          console.error(`❌ Failed to generate signed URL for playlist thumbnail ${thumbnailKey}:`, error.message);
+        }
+      }
+
+      // Check if video file actually exists on disk (for local storage)
+      let fileExists = false;
+      if (item.videoFile && !isS3Enabled()) {
         const videoPath = path.join(process.cwd(), 'uploads', item.videoFile);
-        const fileExists = fs.existsSync(videoPath);
+        fileExists = fs.existsSync(videoPath);
         console.log(`📹 Video file check: ${item.videoFile}`);
         console.log(`   Database value: ${item.videoFile}`);
         console.log(`   Full path: ${videoPath}`);
         console.log(`   File exists: ${fileExists}`);
-
-        if (!fileExists) {
-          // List files in uploads to help debug
-          const uploadsDir = path.join(process.cwd(), 'uploads');
-          if (fs.existsSync(uploadsDir)) {
-            const files = fs.readdirSync(uploadsDir);
-            console.log(`   Files in uploads (${files.length}):`, files.slice(-5));
-          }
-        }
-
-        // Add file existence info to response
-        processed.fileExists = fileExists;
+      } else if (isS3Enabled() && videoKey) {
+        // For S3, assume file exists if we have a key
+        fileExists = true;
       }
 
-      return processed;
-    });
+      return {
+        ...processed,
+        // Keys (for reference)
+        videoKey: videoKey,
+        thumbnailKey: thumbnailKey,
+        // Signed URLs (for accessing private S3 objects)
+        videoSignedUrl: videoSignedUrl,
+        videoSignedUrlExpiresAt: videoSignedUrlExpiresAt,
+        thumbnailSignedUrl: thumbnailSignedUrl,
+        thumbnailSignedUrlExpiresAt: thumbnailSignedUrlExpiresAt,
+        // Main fields - use signed URLs if available, otherwise keys/filenames
+        videoFile: videoSignedUrl || videoKey || processed.videoFile, // Use signed URL if available
+        thumbnail: thumbnailSignedUrl || thumbnailKey || processed.thumbnail, // Use signed URL if available
+        fileExists: fileExists
+      };
+    }));
 
     res.status(200).json({
       success: true,

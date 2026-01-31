@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../Middleware/userAuth.js';
 import sendEmail from '../Common/nodeMailer.js';
+import { isS3Enabled, getSignedThumbnailUrl, getUploadPrefix } from '../services/s3Service.js';
 
 // Password validation helper
 // Allowed special characters: @$!%*?&
@@ -434,6 +435,9 @@ const login = async (req, res) => {
 
     console.log('Successful login for verified user:', email);
 
+    // Get profile picture with signed URL if S3 is enabled
+    const profilePicData = await getProfilePicWithSignedUrl(user.profilePic);
+
     res.json({
       success: true,
       message: 'Login successful',
@@ -448,7 +452,10 @@ const login = async (req, res) => {
         role: user.role,
         isVerified: user.isVerified,
         canCreatePaidQuiz: user.canCreatePaidQuiz || false,
-        profilePic: toFilenameOnly(user.profilePic) || null,
+        profilePic: profilePicData.profilePic,
+        profilePicKey: profilePicData.profilePicKey,
+        profilePicSignedUrl: profilePicData.profilePicSignedUrl,
+        profilePicSignedUrlExpiresAt: profilePicData.profilePicSignedUrlExpiresAt,
         mobile: user.mobile || null
       }
     });
@@ -644,16 +651,18 @@ const getProfile = async (req, res) => {
       });
     }
 
-    // Return user with profilePic as filename only
+    // Get profile picture with signed URL if S3 is enabled
+    const profilePicData = await getProfilePicWithSignedUrl(user.profilePic);
+    
     const userObj = user.toObject();
-    const userWithFilename = {
+    const userWithProfilePic = {
       ...userObj,
-      profilePic: toFilenameOnly(userObj.profilePic)
+      ...profilePicData
     };
 
     res.json({
       success: true,
-      user: userWithFilename
+      user: userWithProfilePic
     });
 
   } catch (error) {
@@ -678,16 +687,18 @@ const getMyProfile = async (req, res) => {
       });
     }
 
-    // Return user with profilePic as filename only
+    // Get profile picture with signed URL if S3 is enabled
+    const profilePicData = await getProfilePicWithSignedUrl(user.profilePic);
+    
     const userObj = user.toObject();
-    const userWithFilename = {
+    const userWithProfilePic = {
       ...userObj,
-      profilePic: toFilenameOnly(userObj.profilePic)
+      ...profilePicData
     };
 
     res.json({
       success: true,
-      user: userWithFilename
+      user: userWithProfilePic
     });
 
   } catch (error) {
@@ -759,31 +770,51 @@ const updateProfile = async (req, res) => {
     if (email) user.email = email;
     if (mobile !== undefined) user.mobile = mobile;
     if (profilePic !== undefined) {
-      // Store only filename if it's a full URL
-      user.profilePic = toFilenameOnly(profilePic) || profilePic;
+      // Store key (with prefix if S3 enabled) - might be a key or filename
+      let profilePicKey = profilePic;
+      if (isS3Enabled()) {
+        const uploadPrefix = getUploadPrefix();
+        // If it's a full URL, extract the key
+        if (profilePic.startsWith('http://') || profilePic.startsWith('https://')) {
+          // Extract key from URL (assumes format: .../uploads/filename)
+          const urlParts = profilePic.split('/');
+          const uploadsIndex = urlParts.findIndex(part => part === 'uploads');
+          if (uploadsIndex >= 0 && uploadsIndex < urlParts.length - 1) {
+            profilePicKey = uploadPrefix + urlParts.slice(uploadsIndex + 1).join('/');
+          } else {
+            profilePicKey = toFilenameOnly(profilePic) || profilePic;
+            if (!profilePicKey.startsWith(uploadPrefix)) {
+              profilePicKey = uploadPrefix + profilePicKey;
+            }
+          }
+        } else if (!profilePicKey.startsWith(uploadPrefix)) {
+          // If it's just a filename, add prefix
+          profilePicKey = uploadPrefix + profilePicKey;
+        }
+      } else {
+        // For local storage, store only filename
+        profilePicKey = toFilenameOnly(profilePic) || profilePic;
+      }
+      user.profilePic = profilePicKey;
     }
 
     await user.save();
 
-    // Return user with profilePic as filename only
-    const userObj = user.toObject();
-    const userWithFilename = {
-      ...userObj,
-      profilePic: toFilenameOnly(userObj.profilePic)
-    };
+    // Get profile picture with signed URL if S3 is enabled
+    const profilePicData = await getProfilePicWithSignedUrl(user.profilePic);
 
     res.json({
       success: true,
       message: 'Profile updated successfully',
       user: {
-        id: userWithFilename._id,
-        name: userWithFilename.name,
-        email: userWithFilename.email,
-        role: userWithFilename.role,
-        mobile: userWithFilename.mobile,
-        profilePic: userWithFilename.profilePic, // Filename only
-        isVerified: userWithFilename.isVerified,
-        updatedAt: userWithFilename.updatedAt
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        mobile: user.mobile,
+        ...profilePicData,
+        isVerified: user.isVerified,
+        updatedAt: user.updatedAt
       }
     });
 
@@ -1364,6 +1395,48 @@ const toFilenameOnly = (urlOrPath) => {
   return parts.length ? parts[parts.length - 1] : null;
 };
 
+// Helper function to get profile picture with signed URL
+const getProfilePicWithSignedUrl = async (profilePic) => {
+  if (!profilePic) {
+    return {
+      profilePic: null,
+      profilePicKey: null,
+      profilePicSignedUrl: null,
+      profilePicSignedUrlExpiresAt: null
+    };
+  }
+
+  let profilePicKey = profilePic;
+  
+  // Ensure key has the upload prefix if S3 is enabled
+  if (isS3Enabled()) {
+    const uploadPrefix = getUploadPrefix();
+    if (!profilePicKey.startsWith(uploadPrefix)) {
+      profilePicKey = uploadPrefix + profilePicKey;
+    }
+  }
+
+  // Generate signed URL if S3 is enabled
+  let profilePicSignedUrl = null;
+  let profilePicSignedUrlExpiresAt = null;
+  if (isS3Enabled() && profilePicKey) {
+    try {
+      const signedUrlData = await getSignedThumbnailUrl(profilePicKey);
+      profilePicSignedUrl = signedUrlData.url;
+      profilePicSignedUrlExpiresAt = signedUrlData.expiresAt;
+    } catch (error) {
+      console.error(`❌ Failed to generate signed URL for profile picture ${profilePicKey}:`, error.message);
+    }
+  }
+
+  return {
+    profilePic: profilePicSignedUrl || profilePicKey, // Use signed URL if available
+    profilePicKey: profilePicKey,
+    profilePicSignedUrl: profilePicSignedUrl,
+    profilePicSignedUrlExpiresAt: profilePicSignedUrlExpiresAt
+  };
+};
+
 // Upload profile picture
 const uploadProfilePic = async (req, res) => {
   try {
@@ -1384,24 +1457,53 @@ const uploadProfilePic = async (req, res) => {
       });
     }
 
-    // Store only filename (not full URL)
-    const profilePicFilename = req.file.filename;
+    // Get profile picture key (with prefix if S3 enabled)
+    let profilePicKey = req.file.filename; // Might have prefix if S3 enabled
+    if (req.file.s3Key) {
+      profilePicKey = req.file.s3Key; // Use S3 key if available
+    } else if (isS3Enabled()) {
+      // Ensure key has the upload prefix if S3 is enabled
+      const uploadPrefix = getUploadPrefix();
+      if (!profilePicKey.startsWith(uploadPrefix)) {
+        profilePicKey = uploadPrefix + profilePicKey;
+      }
+    }
 
-    // Update user profile pic with filename only
-    user.profilePic = profilePicFilename;
+    // Update user profile pic with key (with prefix if S3 enabled)
+    user.profilePic = profilePicKey;
     await user.save();
+
+    // Generate signed URL if S3 is enabled
+    let profilePicSignedUrl = null;
+    let profilePicSignedUrlExpiresAt = null;
+    if (isS3Enabled() && profilePicKey) {
+      try {
+        const signedUrlData = await getSignedThumbnailUrl(profilePicKey);
+        profilePicSignedUrl = signedUrlData.url;
+        profilePicSignedUrlExpiresAt = signedUrlData.expiresAt;
+        console.log('✅ Generated signed URL for profile picture:', profilePicKey.substring(0, 50));
+      } catch (error) {
+        console.error(`❌ Failed to generate signed URL for profile picture ${profilePicKey}:`, error.message);
+      }
+    }
 
     res.json({
       success: true,
       message: 'Profile picture uploaded successfully',
-      url: profilePicFilename, // Return filename only
+      url: profilePicKey, // Return key (with prefix if S3 enabled)
+      profilePicKey: profilePicKey,
+      profilePicSignedUrl: profilePicSignedUrl,
+      profilePicSignedUrlExpiresAt: profilePicSignedUrlExpiresAt,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
         mobile: user.mobile,
-        profilePic: profilePicFilename, // Return filename only
+        profilePic: profilePicSignedUrl || profilePicKey, // Use signed URL if available
+        profilePicKey: profilePicKey,
+        profilePicSignedUrl: profilePicSignedUrl,
+        profilePicSignedUrlExpiresAt: profilePicSignedUrlExpiresAt,
         isVerified: user.isVerified
       }
     });

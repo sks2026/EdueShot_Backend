@@ -1,7 +1,7 @@
 import express from 'express';
 import adminController from '../controllers/adminController.js';
 import authenticateToken, { adminOnly } from '../Middleware/userAuth.js';
-import { courseUpload, videoUpload, handleUploadError } from '../Middleware/upload.js';
+import { courseUpload, videoUpload, handleUploadError } from '../Middleware/s3Upload.js';
 
 const router = express.Router();
 

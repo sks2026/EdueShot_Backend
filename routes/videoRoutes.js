@@ -1,7 +1,7 @@
 import express from 'express';
 import VideoController from '../controllers/videoController.js';
 import { authenticateToken, teacherOnly } from '../Middleware/userAuth.js';
-import { videoUpload, handleUploadError } from '../Middleware/upload.js';
+import { videoUpload, handleUploadError } from '../Middleware/s3Upload.js';
 
 const router = express.Router();
 

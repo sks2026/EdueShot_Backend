@@ -11,7 +11,7 @@ import {
   getBaseUrlConfig,
 } from "../controllers/coursePlaylist.js";
 import authenticateToken from "../Middleware/userAuth.js";
-import { videoUpload, handleUploadError } from "../Middleware/upload.js";
+import { videoUpload, handleUploadError } from "../Middleware/s3Upload.js";
 
 const router = express.Router();
 

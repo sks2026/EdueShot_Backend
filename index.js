@@ -12,6 +12,7 @@ import adminRoutes from './routes/adminRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import teacherVerificationRoutes from './routes/teacherVerificationRoutes.js';
 import supportRoutes from './routes/supportRoutes.js';
+import s3Routes from './routes/s3Routes.js';
 import { apiLimiter } from './Middleware/rateLimiter.js';
 import { getMyCourses } from './controllers/courseController.js';
 import authenticateToken from './Middleware/userAuth.js';
@@ -21,7 +22,28 @@ import path from 'path';
 // Load environment variables
 dotenv.config();
 
-// Ensure uploads directory exists
+// Check S3 configuration status
+import('./services/s3Service.js').then(({ isS3Enabled }) => {
+  const s3Status = isS3Enabled();
+  if (s3Status) {
+    console.log('✅ S3 enabled - Files will be uploaded to AWS S3');
+    if (process.env.S3_ENABLED === "true") {
+      console.log('   (Enabled via S3_ENABLED=true)');
+    }
+    if (process.env.STORAGE_TYPE === "s3") {
+      console.log('   (Enabled via STORAGE_TYPE=s3)');
+    }
+  } else {
+    console.log('ℹ️ S3 disabled - Files will be saved to local storage');
+    if (process.env.S3_ENABLED === "true" || process.env.STORAGE_TYPE === "s3") {
+      console.warn('⚠️ S3 flag/type is set but AWS credentials are missing or incomplete');
+    }
+  }
+}).catch(() => {
+  console.log('ℹ️ S3 disabled - Files will be saved to local storage');
+});
+
+// Ensure uploads directory exists (for local storage fallback)
 const uploadsDir = path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -62,8 +84,8 @@ app.use(cors({
       callback(null, true); // Allow all origins for now (mobile app compatibility)
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Range'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'Accept'],
   exposedHeaders: ['Content-Length', 'Content-Range', 'Accept-Ranges']
 }));
 
@@ -78,12 +100,27 @@ app.use('/api/', apiLimiter);
 app.use(express.static('public'));
 
 // Serve uploaded files from uploads directory with proper URL encoding handling
-app.use('/uploads', (req, res, next) => {
+// NOTE: When S3 is enabled, files are stored in S3 and should be accessed via signed URLs
+app.use('/uploads', async (req, res, next) => {
+  // Check if S3 is enabled
+  const { isS3Enabled } = await import('./services/s3Service.js');
+  
+  if (isS3Enabled()) {
+    // S3 is enabled - files should be accessed via signed URLs, not direct local access
+    console.log('⚠️ S3 enabled - Direct file access blocked. Use signed URLs instead.');
+    console.log('📝 Requested file:', req.url);
+    return res.status(403).json({
+      success: false,
+      error: 'Files are stored in S3. Please use signed URLs to access them.',
+      message: 'This file is stored in AWS S3. Use the /api/s3/signed-url endpoint to get a signed URL.',
+      requestedPath: req.url
+    });
+  }
+  
+  // S3 is disabled - serve from local storage
   const filename = decodeURIComponent(req.url.substring(1)); // Remove leading slash and decode URL
-  console.log('🎯 Requested file:', filename);
+  console.log('🎯 Requested file (local storage):', filename);
   console.log('🔍 Original URL:', req.url);
-  
-  
   
   // Construct file path
   const filePath = path.join(process.cwd(), 'uploads', filename);
@@ -199,7 +236,19 @@ app.get('/debug/file/:filename', (req, res) => {
 });
 
 // Debug endpoint to list all uploads
-app.get('/debug/uploads', (req, res) => {
+app.get('/debug/uploads', async (req, res) => {
+  // Check if S3 is enabled
+  const { isS3Enabled } = await import('./services/s3Service.js');
+  
+  if (isS3Enabled()) {
+    return res.json({
+      success: false,
+      error: 'S3 is enabled - files are stored in S3, not local storage',
+      message: 'Files are stored in AWS S3. Use S3 console or API to list files.',
+      s3Bucket: process.env.AWS_S3_BUCKET_NAME || 'Not configured'
+    });
+  }
+  
   const uploadsDir = path.join(process.cwd(), 'uploads');
 
   console.log('🔍 Debug uploads request');
@@ -258,6 +307,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/verification', teacherVerificationRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/s3', s3Routes);
 
 // Basic route
 app.get('/', (req, res) => {
